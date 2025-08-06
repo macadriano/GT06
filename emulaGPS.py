@@ -106,23 +106,32 @@ def validate_login_ack(response):
     """
     Valida que la respuesta del servidor sea un ACK de login correcto
     """
+    print(f"Validando ACK: {response.hex()}")
+    print(f"Longitud del ACK: {len(response)} bytes")
+    
     if len(response) < 11:
+        print(f"ACK demasiado corto: {len(response)} bytes")
         return False
     
     # Verificar estructura del ACK: 7878 + 05 + 01 + serial + CRC16 + 0D0A
     if not response.startswith(b'\x78\x78'):
+        print("ACK no comienza con 7878")
         return False
     
     if response[2] != 0x05:  # Length debe ser 5
+        print(f"Length incorrecto: {response[2]} (esperado: 5)")
         return False
     
     if response[3] != 0x01:  # Tipo debe ser 01 (ACK de login)
+        print(f"Tipo incorrecto: {response[3]} (esperado: 1)")
         return False
     
     # Verificar que termine con 0D0A
     if not response.endswith(b'\x0D\x0A'):
+        print("ACK no termina con 0D0A")
         return False
     
+    print(f"✓ ACK válido recibido: {response.hex()}")
     return True
 
 # ------------------- MAIN --------------------
