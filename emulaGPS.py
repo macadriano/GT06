@@ -109,7 +109,7 @@ def validate_login_ack(response):
     print(f"Validando ACK: {response.hex()}")
     print(f"Longitud del ACK: {len(response)} bytes")
     
-    if len(response) < 11:
+    if len(response) < 10:  # Longitud mínima del ACK: 10 bytes
         print(f"ACK demasiado corto: {len(response)} bytes")
         return False
     
