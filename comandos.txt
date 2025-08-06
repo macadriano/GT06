@@ -1,0 +1,9 @@
+scp "C:\python\GT06_TRACKER.PY" root@200.58.98.187:/root/python/
+
+scp "C:\python\emulaGPS.py" root@200.58.98.187:/root/python/
+
+scp root@200.58.98.187:/root/python/datosChino.txt c:\python
+
+scp "C:\python\EscucharTCP.py" root@200.58.98.187:/root/python/
+
+scp root@200.58.98.187:/root/python/recibidoGPS.txt c:\python

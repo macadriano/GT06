@@ -1,0 +1,85 @@
+import socket
+import binascii
+from datetime import datetime
+
+def crc16(data):
+    crc = 0xFFFF
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            if (crc & 1):
+                crc = (crc >> 1) ^ 0xA001
+            else:
+                crc >>= 1
+    return crc.to_bytes(2, 'big')
+
+def decode_position_data(data):
+    try:
+        hex_data = binascii.hexlify(data).decode('utf-8')
+        if hex_data.startswith('7878') and hex_data[6:8] == '12':
+            # Paquete de posición
+            imei = hex_data[8:22]
+            gps_info = hex_data[22:]
+            lat_raw = int(gps_info[14:22], 16)
+            lon_raw = int(gps_info[22:30], 16)
+            speed = int(gps_info[30:32], 16)
+            course = int(gps_info[32:36], 16)
+            lat = lat_raw / 1800000.0
+            lon = lon_raw / 1800000.0
+            heading = course & 0x03FF
+            return imei, lat, lon, speed, heading
+    except Exception as e:
+        print(f"Error decoding position: {e}")
+    return None
+
+def send_login_ack(sock, raw_data):
+    try:
+        # Buscar el serial del paquete (últimos 4 dígitos antes del CRC y 0D0A)
+        serial = raw_data[-6:-4]
+        ack = bytearray()
+        ack.extend(b'\x78\x78')     # Start
+        ack.append(0x05)            # Length
+        ack.append(0x01)            # Protocol: login ACK
+        ack.extend(serial)          # Serial del paquete recibido
+        crc = crc16(ack[2:])        # Cálculo CRC desde length en adelante
+        ack.extend(crc)
+        ack.extend(b'\x0D\x0A')     # End
+        sock.sendall(ack)
+        print("ACK de login enviado.")
+    except Exception as e:
+        print(f"Error al enviar ACK: {e}")
+
+def main():
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.bind(('0.0.0.0', 5003))
+    server_socket.listen(1)
+    print("Esperando conexión del GPS...")
+
+    client_socket, addr = server_socket.accept()
+    print(f"Conectado desde {addr}")
+
+    with open("datosChino.txt", "a") as file:
+        while True:
+            raw_data = client_socket.recv(1024)
+            if not raw_data:
+                break
+
+            hex_data = binascii.hexlify(raw_data).decode('utf-8')
+            print(f"Paquete recibido (hex): {hex_data}")
+
+            if hex_data.startswith('7878') and hex_data[6:8] == '01':
+                send_login_ack(client_socket, raw_data)
+            else:
+                result = decode_position_data(raw_data)
+                if result:
+                    imei, lat, lon, speed, heading = result
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    line = f"{timestamp} | IMEI: {imei} | Lat: {lat} | Lon: {lon} | Vel: {speed} km/h | Rumbo: {heading}°\n"
+                    print(line)
+                    file.write(line)
+
+    client_socket.close()
+    server_socket.close()
+
+if __name__ == "__main__":
+    main()
