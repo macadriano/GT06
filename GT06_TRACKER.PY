@@ -32,7 +32,7 @@ def log_sent(data):
 
 def handle_login(data):
     # Estructura del paquete de login: 7878 + length + 01 + IMEI(8) + serial(2) + error_check(2) + CRC16(2) + 0D0A
-    if len(data) < 21:  # Longitud mínima del paquete de login
+    if len(data) < 20:  # Longitud mínima del paquete de login (20 bytes)
         log(f"[ERROR] Paquete de login demasiado corto: {len(data)} bytes")
         return None
         
@@ -52,12 +52,15 @@ def handle_login(data):
 
 def parse_position(data):
     try:
-        # Estructura del paquete de posición: 7878 + length + 12 + date(6) + quantity(1) + lat(4) + lon(4) + speed(1) + course(2) + status(1) + mcc(2) + mnc(1) + lac(2) + cell_id(3) + serial(2) + error_check(2) + CRC16(2) + 0D0A
-        if len(data) < 35:  # Longitud mínima del paquete de posición
+        # Estructura simplificada del paquete de posición: 7878 + length + 12 + date(6) + quantity(1) + lat(4) + lon(4) + speed(1) + course(2) + status(1) + serial(2) + error_check(2) + CRC16(2) + 0D0A
+        log(f"[DEBUG] Longitud del paquete de posición: {len(data)} bytes")
+        log(f"[DEBUG] Paquete completo: {data.hex()}")
+        
+        if len(data) < 25:  # Longitud mínima del paquete de posición simplificado
             log(f"[ERROR] Paquete de posición demasiado corto: {len(data)} bytes")
             return
             
-        # Extraer campos según la nueva estructura
+        # Extraer campos según la estructura simplificada
         date_bytes = data[4:10]  # Fecha/hora en BCD
         quantity = data[10]      # Cantidad de posiciones
         lat_raw = data[11:15]    # Latitud
@@ -65,6 +68,10 @@ def parse_position(data):
         speed = data[19]         # Velocidad
         course = int.from_bytes(data[20:22], byteorder='big')  # Rumbo
         status = data[22]        # Estado del GPS
+        serial = int.from_bytes(data[23:25], byteorder='big')  # Serial number
+        
+        log(f"[DEBUG] Date: {date_bytes.hex()}, Quantity: {quantity}, Speed: {speed}, Course: {course}")
+        log(f"[DEBUG] Lat raw: {lat_raw.hex()}, Lon raw: {lon_raw.hex()}")
         
         # Validar que las coordenadas no sean cero (GPS sin señal)
         if lat_raw == b'\x00\x00\x00\x00' or lon_raw == b'\x00\x00\x00\x00':
@@ -88,16 +95,9 @@ def parse_position(data):
         if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
             log(f"[ERROR] Coordenadas fuera de rango: LAT={lat}, LON={lon}")
             return
-            
-        # Extraer información adicional
-        mcc = int.from_bytes(data[24:26], byteorder='big')
-        mnc = data[26]
-        lac = int.from_bytes(data[27:29], byteorder='big')
-        cell_id = int.from_bytes(data[29:32], byteorder='big')
-        serial = int.from_bytes(data[32:34], byteorder='big')
 
         log(f"[POSICION] LAT: {lat:.6f}, LON: {lon:.6f}, SPEED: {speed} km/h, COURSE: {course}°")
-        log(f"[INFO] MCC: {mcc}, MNC: {mnc}, LAC: {lac}, CellID: {cell_id}, Serial: {serial}")
+        log(f"[INFO] Serial: {serial}, Status: {status}")
 
     except IndexError as e:
         log(f"[ERROR] Error de índice al parsear posición: {e}")
@@ -139,7 +139,10 @@ def main():
 
                             if tipo_paquete == 0x01:  # Login
                                 respuesta = handle_login(data)
-                                conn.sendall(respuesta)
+                                if respuesta is not None:
+                                    conn.sendall(respuesta)
+                                else:
+                                    log("[ERROR] No se pudo procesar el login")
                             elif tipo_paquete == 0x12:  # Posición
                                 parse_position(data)
                             elif tipo_paquete == 0x13:  # Estado del terminal

@@ -56,7 +56,8 @@ def build_login_packet(imei):
 
 # Armar paquete de localización
 def build_location_packet():
-    # Estructura correcta del paquete de posición GT06
+    # Estructura simplificada del paquete de posición GT06
+    # 7878 + length + 12 + date(6) + quantity(1) + lat(4) + lon(4) + speed(1) + course(2) + status(1) + serial(2) + error_check(2) + CRC16(2) + 0D0A
     now = datetime.utcnow()
     date_bytes = now.strftime('%y%m%d%H%M%S')
     date_bcd = bcd_encode(date_bytes)
@@ -80,22 +81,16 @@ def build_location_packet():
     course = random.randint(0, 359)
     course_bytes = course.to_bytes(2, 'big')
     
-    # Información adicional del paquete de posición
+    # Información básica del paquete de posición
     quantity = 1  # Cantidad de posiciones
     status = 0x00  # Estado del GPS
-    mcc = 722  # Mobile Country Code (Argentina)
-    mnc = 10   # Mobile Network Code
-    lac = random.randint(1, 65535)  # Location Area Code
-    cell_id = random.randint(1, 16777215)  # Cell ID
     serial = random.randint(1, 65535)  # Serial number
     error_check = b'\x00\x00'  # Error check
     
-    # Contenido del paquete (sin 7878)
+    # Contenido del paquete (sin 7878) - estructura simplificada
     content = (bytes([0x12]) + date_bcd + bytes([quantity]) + 
                lat_bytes + lon_bytes + bytes([speed]) + course_bytes + 
-               bytes([status]) + mcc.to_bytes(2, 'big') + bytes([mnc]) + 
-               lac.to_bytes(2, 'big') + cell_id.to_bytes(3, 'big') + 
-               serial.to_bytes(2, 'big') + error_check)
+               bytes([status]) + serial.to_bytes(2, 'big') + error_check)
     
     length = len(content)
     packet = b'\x78\x78' + bytes([length]) + content
@@ -103,6 +98,8 @@ def build_location_packet():
     packet += checksum + b'\x0D\x0A'
     
     print(f"Paquete posición generado: {packet.hex()}")
+    print(f"Longitud del contenido: {length} bytes")
+    print(f"Longitud total del paquete: {len(packet)} bytes")
     return packet
 
 def validate_login_ack(response):
