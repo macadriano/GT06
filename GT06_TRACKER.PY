@@ -92,6 +92,20 @@ def log(message):
 def log_sent(data):
     log(f"[ENVIADO] {data.hex()}")
 
+def send_alternative_ack(serial, conn):
+    """
+    Envía un ACK alternativo si el GPS sigue enviando paquetes de estado
+    """
+    ack_data = b'\x05\x01' + serial
+    
+    # Probar con little-endian CRC
+    crc_le = crc16(ack_data)
+    ack_le = b'\x78\x78' + ack_data + crc_le + b'\x0D\x0A'
+    
+    log(f"[RETRY] Enviando ACK alternativo con CRC little-endian: {ack_le.hex()}")
+    conn.sendall(ack_le)
+    log_sent(ack_le)
+
 def validate_packet_crc(data):
     """
     Valida el CRC16 de un paquete recibido
@@ -135,6 +149,14 @@ def handle_login(data):
         return None
     
     # Validar CRC del paquete recibido (permitir CRC diferente para dispositivos reales)
+    received_crc = data[-4:-2]  # CRC recibido del paquete de login
+    packet_data = data[2:-4]    # Datos del paquete para calcular CRC
+    
+    # Calcular diferentes variantes del CRC para el paquete de login
+    expected_crc_le = crc16(packet_data)
+    expected_crc_be = crc16_big_endian(packet_data)
+    expected_crc_gt06 = crc16_gt06_correct(packet_data)
+    
     if not validate_packet_crc(data):
         log("[WARNING] CRC del paquete de login no coincide, pero continuando...")
         # No retornar None, continuar procesando de todas formas
@@ -159,11 +181,33 @@ def handle_login(data):
     # Construir ACK: 7878 + 05 + 01 + serial + CRC16 + 0D0A
     # El ACK debe ser: 7878 + 05 + 01 + serial + CRC16 + 0D0A
     ack_data = b'\x05\x01' + serial  # Datos para calcular CRC (sin 7878)
-    checksum = crc16_gt06_correct(ack_data)  # Usar el algoritmo correcto
-    ack = b'\x78\x78' + ack_data + checksum + b'\x0D\x0A'
+    
+    # Probar diferentes algoritmos de CRC para el ACK
+    crc_le = crc16(ack_data)
+    crc_be = crc16_big_endian(ack_data)
+    crc_gt06 = crc16_gt06_correct(ack_data)
     
     log(f"[DEBUG] ACK data: {ack_data.hex()}")
-    log(f"[DEBUG] ACK CRC: {checksum.hex()}")
+    log(f"[DEBUG] ACK CRC (LE): {crc_le.hex()}")
+    log(f"[DEBUG] ACK CRC (BE): {crc_be.hex()}")
+    log(f"[DEBUG] ACK CRC (GT06): {crc_gt06.hex()}")
+    
+    # Intentar usar el mismo algoritmo que coincidió con el paquete de login
+    if received_crc == expected_crc_le:
+        checksum = crc_le
+        log("[DEBUG] Usando CRC little-endian para ACK")
+    elif received_crc == expected_crc_be:
+        checksum = crc_be
+        log("[DEBUG] Usando CRC big-endian para ACK")
+    elif received_crc == expected_crc_gt06:
+        checksum = crc_gt06
+        log("[DEBUG] Usando CRC GT06 para ACK")
+    else:
+        # Si ninguno coincide, probar con little-endian (más común)
+        checksum = crc_le
+        log("[DEBUG] Ningún CRC coincide, usando little-endian para ACK")
+    
+    ack = b'\x78\x78' + ack_data + checksum + b'\x0D\x0A'
     log_sent(ack)
     return ack
 
@@ -278,6 +322,9 @@ def main():
                             if tipo_paquete == 0x01:  # Login
                                 respuesta = handle_login(data)
                                 if respuesta is not None:
+                                    # Guardar el serial para posible reintento
+                                    if len(data) >= 14:
+                                        conn.login_serial = data[12:14]
                                     conn.sendall(respuesta)
                                 else:
                                     log("[ERROR] No se pudo procesar el login")
@@ -285,6 +332,12 @@ def main():
                                 parse_position(data)
                             elif tipo_paquete == 0x13:  # Estado del terminal
                                 log(f"[STATUS] Paquete de estado recibido (0x13)")
+                                # Si recibimos paquete de estado después del login, 
+                                # el ACK no fue reconocido, intentar con ACK alternativo
+                                if hasattr(conn, 'login_serial'):
+                                    log(f"[RETRY] GPS envió estado en lugar de posición, reintentando ACK...")
+                                    send_alternative_ack(conn.login_serial, conn)
+                                    delattr(conn, 'login_serial')  # Limpiar para evitar reintentos infinitos
                             else:
                                 log(f"[WARNING] Tipo de paquete no reconocido: 0x{tipo_paquete:02X}")
                         else:
