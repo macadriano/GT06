@@ -144,85 +144,92 @@ def validate_packet_crc(data):
         return False
 
 def handle_login(data, conn=None):
-    # Estructura del paquete de login: 7878 + length + 01 + IMEI(8) + serial(2) + error_check(2) + CRC16(2) + 0D0A
-    if len(data) < 18:  # Longitud mínima del paquete de login (18 bytes para paquetes reales)
-        log(f"[ERROR] Paquete de login demasiado corto: {len(data)} bytes")
-        return None
-    
-    # Validar CRC del paquete recibido (permitir CRC diferente para dispositivos reales)
-    received_crc = data[-4:-2]  # CRC recibido del paquete de login
-    packet_data = data[2:-4]    # Datos del paquete para calcular CRC
-    
-    # Calcular diferentes variantes del CRC para el paquete de login
-    expected_crc_le = crc16(packet_data)
-    expected_crc_be = crc16_big_endian(packet_data)
-    expected_crc_gt06 = crc16_gt06_correct(packet_data)
-    
-    if not validate_packet_crc(data):
-        log("[WARNING] CRC del paquete de login no coincide, pero continuando...")
-        # No retornar None, continuar procesando de todas formas
+    try:
+        # Estructura del paquete de login: 7878 + length + 01 + IMEI(8) + serial(2) + error_check(2) + CRC16(2) + 0D0A
+        if len(data) < 18:  # Longitud mínima del paquete de login (18 bytes para paquetes reales)
+            log(f"[ERROR] Paquete de login demasiado corto: {len(data)} bytes")
+            return None
         
-    # Extraer IMEI - puede estar en diferentes posiciones según el dispositivo
-    if len(data) >= 12:
-        imei = data[4:12].hex()  # IMEI está en bytes 4-11
-        log(f"[LOGIN] IMEI: {imei}")
-    else:
-        log(f"[ERROR] No se puede extraer IMEI del paquete de {len(data)} bytes")
-        return None
-    
-    # Extraer serial - puede estar en diferentes posiciones
-    if len(data) >= 14:
-        serial = data[12:14]  # Serial está en bytes 12-13
-        log(f"[LOGIN] Serial: {serial.hex()}")
+        # Validar CRC del paquete recibido (permitir CRC diferente para dispositivos reales)
+        received_crc = data[-4:-2]  # CRC recibido del paquete de login
+        packet_data = data[2:-4]    # Datos del paquete para calcular CRC
         
-        # Guardar el serial en la conexión para posible reintento
-        if conn is not None:
-            conn.login_serial = serial
-            log(f"[DEBUG] Serial guardado en conexión: {serial.hex()}")
+        # Calcular diferentes variantes del CRC para el paquete de login
+        expected_crc_le = crc16(packet_data)
+        expected_crc_be = crc16_big_endian(packet_data)
+        expected_crc_gt06 = crc16_gt06_correct(packet_data)
+        
+        if not validate_packet_crc(data):
+            log("[WARNING] CRC del paquete de login no coincide, pero continuando...")
+            # No retornar None, continuar procesando de todas formas
+            
+        # Extraer IMEI - puede estar en diferentes posiciones según el dispositivo
+        if len(data) >= 12:
+            imei = data[4:12].hex()  # IMEI está en bytes 4-11
+            log(f"[LOGIN] IMEI: {imei}")
         else:
-            log(f"[DEBUG] No hay conexión para guardar serial")
-    else:
-        # Si no hay serial, usar uno por defecto
-        serial = b'\x00\x01'
-        log(f"[LOGIN] Serial no encontrado, usando por defecto: {serial.hex()}")
-        if conn is not None:
-            conn.login_serial = serial
-            log(f"[DEBUG] Serial por defecto guardado en conexión: {serial.hex()}")
+            log(f"[ERROR] No se puede extraer IMEI del paquete de {len(data)} bytes")
+            return None
+        
+        # Extraer serial - puede estar en diferentes posiciones
+        if len(data) >= 14:
+            serial = data[12:14]  # Serial está en bytes 12-13
+            log(f"[LOGIN] Serial: {serial.hex()}")
+            
+            # Guardar el serial en la conexión para posible reintento
+            if conn is not None:
+                conn.login_serial = serial
+                log(f"[DEBUG] Serial guardado en conexión: {serial.hex()}")
+            else:
+                log(f"[DEBUG] No hay conexión para guardar serial")
         else:
-            log(f"[DEBUG] No hay conexión para guardar serial por defecto")
-    
-    # Construir ACK: 7878 + 05 + 01 + serial + CRC16 + 0D0A
-    # El ACK debe ser: 7878 + 05 + 01 + serial + CRC16 + 0D0A
-    ack_data = b'\x05\x01' + serial  # Datos para calcular CRC (sin 7878)
-    
-    # Probar diferentes algoritmos de CRC para el ACK
-    crc_le = crc16(ack_data)
-    crc_be = crc16_big_endian(ack_data)
-    crc_gt06 = crc16_gt06_correct(ack_data)
-    
-    log(f"[DEBUG] ACK data: {ack_data.hex()}")
-    log(f"[DEBUG] ACK CRC (LE): {crc_le.hex()}")
-    log(f"[DEBUG] ACK CRC (BE): {crc_be.hex()}")
-    log(f"[DEBUG] ACK CRC (GT06): {crc_gt06.hex()}")
-    
-    # Intentar usar el mismo algoritmo que coincidió con el paquete de login
-    if received_crc == expected_crc_le:
-        checksum = crc_le
-        log("[DEBUG] Usando CRC little-endian para ACK")
-    elif received_crc == expected_crc_be:
-        checksum = crc_be
-        log("[DEBUG] Usando CRC big-endian para ACK")
-    elif received_crc == expected_crc_gt06:
-        checksum = crc_gt06
-        log("[DEBUG] Usando CRC GT06 para ACK")
-    else:
-        # Si ninguno coincide, probar con little-endian (más común)
-        checksum = crc_le
-        log("[DEBUG] Ningún CRC coincide, usando little-endian para ACK")
-    
-    ack = b'\x78\x78' + ack_data + checksum + b'\x0D\x0A'
-    log_sent(ack)
-    return ack
+            # Si no hay serial, usar uno por defecto
+            serial = b'\x00\x01'
+            log(f"[LOGIN] Serial no encontrado, usando por defecto: {serial.hex()}")
+            if conn is not None:
+                conn.login_serial = serial
+                log(f"[DEBUG] Serial por defecto guardado en conexión: {serial.hex()}")
+            else:
+                log(f"[DEBUG] No hay conexión para guardar serial por defecto")
+        
+        # Construir ACK: 7878 + 05 + 01 + serial + CRC16 + 0D0A
+        # El ACK debe ser: 7878 + 05 + 01 + serial + CRC16 + 0D0A
+        ack_data = b'\x05\x01' + serial  # Datos para calcular CRC (sin 7878)
+        
+        # Probar diferentes algoritmos de CRC para el ACK
+        crc_le = crc16(ack_data)
+        crc_be = crc16_big_endian(ack_data)
+        crc_gt06 = crc16_gt06_correct(ack_data)
+        
+        log(f"[DEBUG] ACK data: {ack_data.hex()}")
+        log(f"[DEBUG] ACK CRC (LE): {crc_le.hex()}")
+        log(f"[DEBUG] ACK CRC (BE): {crc_be.hex()}")
+        log(f"[DEBUG] ACK CRC (GT06): {crc_gt06.hex()}")
+        
+        # Intentar usar el mismo algoritmo que coincidió con el paquete de login
+        if received_crc == expected_crc_le:
+            checksum = crc_le
+            log("[DEBUG] Usando CRC little-endian para ACK")
+        elif received_crc == expected_crc_be:
+            checksum = crc_be
+            log("[DEBUG] Usando CRC big-endian para ACK")
+        elif received_crc == expected_crc_gt06:
+            checksum = crc_gt06
+            log("[DEBUG] Usando CRC GT06 para ACK")
+        else:
+            # Si ninguno coincide, probar con little-endian (más común)
+            checksum = crc_le
+            log("[DEBUG] Ningún CRC coincide, usando little-endian para ACK")
+        
+        ack = b'\x78\x78' + ack_data + checksum + b'\x0D\x0A'
+        log_sent(ack)
+        return ack
+        
+    except Exception as e:
+        log(f"[ERROR] Error en handle_login: {e}")
+        import traceback
+        log(f"[ERROR] Traceback: {traceback.format_exc()}")
+        return None
 
 def parse_position(data):
     try:
