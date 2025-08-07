@@ -1,5 +1,7 @@
 import socket
 import datetime
+import time
+import threading
 
 HOST = '200.58.98.187'
 PORT = 5003
@@ -92,20 +94,72 @@ def log(message):
 def log_sent(data):
     log(f"[ENVIADO] {data.hex()}")
 
-def send_alternative_ack(serial, conn):
+def send_alternative_ack(serial, conn, ack_type='le'):
     """
-    Envía un ACK alternativo si el GPS sigue enviando paquetes de estado
+    Envía un ACK alternativo con diferentes tipos de CRC
     """
     ack_data = b'\x05\x01' + serial
     
-    # Probar con little-endian CRC (más común en GT06)
-    crc_le = crc16(ack_data)
-    ack_le = b'\x78\x78' + ack_data + crc_le + b'\x0D\x0A'
+    if ack_type == 'le':
+        # Little-endian CRC
+        crc = crc16(ack_data)
+        log(f"[ACK_LE] Enviando ACK con CRC little-endian: {ack_data.hex()}, CRC: {crc.hex()}")
+    elif ack_type == 'be':
+        # Big-endian CRC
+        crc = crc16_big_endian(ack_data)
+        log(f"[ACK_BE] Enviando ACK con CRC big-endian: {ack_data.hex()}, CRC: {crc.hex()}")
+    elif ack_type == 'gt06':
+        # GT06 oficial CRC
+        crc = crc16_gt06_correct(ack_data)
+        log(f"[ACK_GT06] Enviando ACK con CRC GT06 oficial: {ack_data.hex()}, CRC: {crc.hex()}")
+    else:
+        log(f"[ERROR] Tipo de ACK no reconocido: {ack_type}")
+        return
     
-    log(f"[RETRY] Enviando ACK alternativo con CRC little-endian: {ack_le.hex()}")
-    log(f"[RETRY] ACK data: {ack_data.hex()}, CRC: {crc_le.hex()}")
-    conn.sendall(ack_le)
-    log_sent(ack_le)
+    ack = b'\x78\x78' + ack_data + crc + b'\x0D\x0A'
+    conn.sendall(ack)
+    log_sent(ack)
+
+def auto_retry_ack(serial, conn, conn_data):
+    """
+    Sistema automático de reintentos de ACK
+    Prueba diferentes tipos de CRC automáticamente
+    """
+    def retry_thread():
+        # Tipos de ACK a probar en orden
+        ack_types = ['le', 'be', 'gt06']
+        current_ack = 0
+        
+        # Esperar 3 segundos antes del primer reintento
+        time.sleep(3)
+        
+        while current_ack < len(ack_types) and not conn_data.get('ack_success', False):
+            if conn_data.get('connection_closed', False):
+                break
+                
+            ack_type = ack_types[current_ack]
+            log(f"[AUTO_RETRY] Intento {current_ack + 1}/3: Probando ACK tipo '{ack_type}'")
+            
+            try:
+                send_alternative_ack(serial, conn, ack_type)
+                conn_data['current_ack_type'] = ack_type
+                conn_data['ack_attempts'] = conn_data.get('ack_attempts', 0) + 1
+                
+                # Esperar 5 segundos antes del siguiente intento
+                time.sleep(5)
+                current_ack += 1
+                
+            except Exception as e:
+                log(f"[ERROR] Error en auto_retry_ack: {e}")
+                break
+        
+        if not conn_data.get('ack_success', False):
+            log(f"[AUTO_RETRY] Completados {len(ack_types)} intentos sin éxito")
+    
+    # Iniciar thread de reintentos
+    retry_thread = threading.Thread(target=retry_thread, daemon=True)
+    retry_thread.start()
+    conn_data['retry_thread'] = retry_thread
 
 def validate_packet_crc(data):
     """
@@ -318,7 +372,15 @@ def main():
                     log(f"Conexion entrante desde {addr}")
                     
                     # Inicializar datos de esta conexión
-                    connection_data[conn] = {'login_serial': None, 'retry_sent': False}
+                    connection_data[conn] = {
+                        'login_serial': None, 
+                        'retry_sent': False,
+                        'ack_success': False,
+                        'ack_attempts': 0,
+                        'current_ack_type': None,
+                        'connection_closed': False,
+                        'retry_thread': None
+                    }
                     
                     while True:
                         data = conn.recv(1024)
@@ -351,31 +413,28 @@ def main():
                                 respuesta = handle_login(data, connection_data[conn])
                                 if respuesta is not None:
                                     conn.sendall(respuesta)
+                                    # Iniciar sistema automático de reintentos
+                                    conn_data = connection_data[conn]
+                                    if conn_data['login_serial'] is not None:
+                                        log(f"[AUTO_RETRY] Iniciando sistema automático de reintentos para serial: {conn_data['login_serial'].hex()}")
+                                        auto_retry_ack(conn_data['login_serial'], conn, conn_data)
                                 else:
                                     log("[ERROR] No se pudo procesar el login")
                             elif tipo_paquete == 0x12:  # Posición
+                                log(f"[SUCCESS] ¡ACK exitoso! GPS envió paquete de posición (0x12)")
+                                conn_data = connection_data[conn]
+                                conn_data['ack_success'] = True
+                                if conn_data.get('current_ack_type'):
+                                    log(f"[SUCCESS] ACK tipo '{conn_data['current_ack_type']}' funcionó correctamente")
                                 parse_position(data)
                             elif tipo_paquete == 0x13:  # Estado del terminal
-                                log(f"[STATUS] Paquete de estado recibido (0x13)")
-                                # Si recibimos paquete de estado después del login, 
-                                # el ACK no fue reconocido, intentar con ACK alternativo
-                                try:
-                                    conn_data = connection_data[conn]
-                                    log(f"[DEBUG] Verificando datos de conexión...")
-                                    log(f"[DEBUG] Tiene login_serial: {conn_data['login_serial'] is not None}")
-                                    log(f"[DEBUG] Tiene retry_sent: {conn_data['retry_sent']}")
-                                    
-                                    if conn_data['login_serial'] is not None and not conn_data['retry_sent']:
-                                        log(f"[RETRY] GPS envió estado en lugar de posición, reintentando ACK...")
-                                        log(f"[DEBUG] Serial para reintento: {conn_data['login_serial'].hex()}")
-                                        send_alternative_ack(conn_data['login_serial'], conn)
-                                        conn_data['retry_sent'] = True  # Marcar que ya se envió un reintento
-                                    elif conn_data['retry_sent']:
-                                        log(f"[INFO] Reintento ya enviado, esperando respuesta del GPS...")
-                                    else:
-                                        log(f"[DEBUG] No se puede hacer reintento - falta login_serial")
-                                except Exception as e:
-                                    log(f"[ERROR] Error en reintento: {e}")
+                                log(f"[STATUS] Paquete de estado recibido (0x13) - ACK aún no reconocido")
+                                # El sistema automático ya está probando diferentes ACKs
+                                conn_data = connection_data[conn]
+                                if conn_data.get('ack_attempts', 0) > 0:
+                                    log(f"[STATUS] Ya se han probado {conn_data['ack_attempts']} tipos de ACK")
+                                else:
+                                    log(f"[STATUS] Sistema automático de reintentos en progreso...")
                             else:
                                 log(f"[WARNING] Tipo de paquete no reconocido: 0x{tipo_paquete:02X}")
                         else:
@@ -383,6 +442,9 @@ def main():
                     
                     # Limpiar datos de conexión al cerrar
                     if conn in connection_data:
+                        conn_data = connection_data[conn]
+                        conn_data['connection_closed'] = True
+                        log(f"[INFO] Conexión cerrada, limpiando datos")
                         del connection_data[conn]
                         
             except socket.error as e:
