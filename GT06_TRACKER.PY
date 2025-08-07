@@ -3,6 +3,7 @@ import datetime
 
 HOST = '200.58.98.187'
 PORT = 5003
+pp = 4994
 
 LOG_FILE = "datosChino.txt"
 
@@ -30,10 +31,35 @@ def log(message):
 def log_sent(data):
     log(f"[ENVIADO] {data.hex()}")
 
+def validate_packet_crc(data):
+    """
+    Valida el CRC16 de un paquete recibido
+    """
+    if len(data) < 6:  # Mínimo: 7878 + length + data + CRC16 + 0D0A
+        return False
+    
+    # Extraer datos para calcular CRC (desde length hasta antes del CRC)
+    packet_data = data[2:-4]  # Sin 7878 y sin CRC16 + 0D0A
+    received_crc = data[-4:-2]  # CRC recibido
+    
+    # Calcular CRC esperado
+    expected_crc = crc16(packet_data)
+    
+    log(f"[DEBUG] Packet data: {packet_data.hex()}")
+    log(f"[DEBUG] Received CRC: {received_crc.hex()}")
+    log(f"[DEBUG] Expected CRC: {expected_crc.hex()}")
+    
+    return received_crc == expected_crc
+
 def handle_login(data):
     # Estructura del paquete de login: 7878 + length + 01 + IMEI(8) + serial(2) + error_check(2) + CRC16(2) + 0D0A
     if len(data) < 18:  # Longitud mínima del paquete de login (18 bytes para paquetes reales)
         log(f"[ERROR] Paquete de login demasiado corto: {len(data)} bytes")
+        return None
+    
+    # Validar CRC del paquete recibido
+    if not validate_packet_crc(data):
+        log("[ERROR] CRC del paquete de login inválido")
         return None
         
     # Extraer IMEI - puede estar en diferentes posiciones según el dispositivo
