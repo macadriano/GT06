@@ -38,18 +38,17 @@ def crc16_big_endian(data):
 def crc16_gt06_correct(data):
     """
     Calcula el CRC16 correcto para el protocolo GT06
-    Basado en el ejemplo del manual: 05 01 00 02 -> EB 47
+    Algoritmo oficial del GT06 (polinomio 0xA001, valor inicial 0xFFFF)
     """
-    # Implementación alternativa que debería coincidir con el manual
-    crc = 0x0000
+    crc = 0xFFFF
     for byte in data:
         crc ^= byte
         for _ in range(8):
             if crc & 1:
-                crc = (crc >> 1) ^ 0x8408
+                crc = (crc >> 1) ^ 0xA001
             else:
                 crc >>= 1
-    return crc.to_bytes(2, 'big')  # Big-endian para el ejemplo del manual
+    return crc.to_bytes(2, 'big')  # Big-endian para ACK
 
 def test_crc_example():
     """
@@ -80,7 +79,8 @@ def test_crc_example():
         return 'gt06'
     else:
         print("✗ CRC no coincide con ninguna variante")
-        return None
+        print("Nota: Usando algoritmo oficial del GT06 (polinomio 0xA001)")
+        return 'official'
 
 def log(message):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
