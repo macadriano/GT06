@@ -178,12 +178,18 @@ def handle_login(data, conn=None):
         # Guardar el serial en la conexión para posible reintento
         if conn is not None:
             conn.login_serial = serial
+            log(f"[DEBUG] Serial guardado en conexión: {serial.hex()}")
+        else:
+            log(f"[DEBUG] No hay conexión para guardar serial")
     else:
         # Si no hay serial, usar uno por defecto
         serial = b'\x00\x01'
         log(f"[LOGIN] Serial no encontrado, usando por defecto: {serial.hex()}")
         if conn is not None:
             conn.login_serial = serial
+            log(f"[DEBUG] Serial por defecto guardado en conexión: {serial.hex()}")
+        else:
+            log(f"[DEBUG] No hay conexión para guardar serial por defecto")
     
     # Construir ACK: 7878 + 05 + 01 + serial + CRC16 + 0D0A
     # El ACK debe ser: 7878 + 05 + 01 + serial + CRC16 + 0D0A
@@ -338,12 +344,22 @@ def main():
                                 log(f"[STATUS] Paquete de estado recibido (0x13)")
                                 # Si recibimos paquete de estado después del login, 
                                 # el ACK no fue reconocido, intentar con ACK alternativo
-                                if hasattr(conn, 'login_serial') and not hasattr(conn, 'retry_sent'):
-                                    log(f"[RETRY] GPS envió estado en lugar de posición, reintentando ACK...")
-                                    send_alternative_ack(conn.login_serial, conn)
-                                    conn.retry_sent = True  # Marcar que ya se envió un reintento
-                                elif hasattr(conn, 'retry_sent'):
-                                    log(f"[INFO] Reintento ya enviado, esperando respuesta del GPS...")
+                                try:
+                                    log(f"[DEBUG] Verificando atributos de conexión...")
+                                    log(f"[DEBUG] Tiene login_serial: {hasattr(conn, 'login_serial')}")
+                                    log(f"[DEBUG] Tiene retry_sent: {hasattr(conn, 'retry_sent')}")
+                                    
+                                    if hasattr(conn, 'login_serial') and not hasattr(conn, 'retry_sent'):
+                                        log(f"[RETRY] GPS envió estado en lugar de posición, reintentando ACK...")
+                                        log(f"[DEBUG] Serial para reintento: {conn.login_serial.hex()}")
+                                        send_alternative_ack(conn.login_serial, conn)
+                                        conn.retry_sent = True  # Marcar que ya se envió un reintento
+                                    elif hasattr(conn, 'retry_sent'):
+                                        log(f"[INFO] Reintento ya enviado, esperando respuesta del GPS...")
+                                    else:
+                                        log(f"[DEBUG] No se puede hacer reintento - falta login_serial")
+                                except Exception as e:
+                                    log(f"[ERROR] Error en reintento: {e}")
                             else:
                                 log(f"[WARNING] Tipo de paquete no reconocido: 0x{tipo_paquete:02X}")
                         else:
