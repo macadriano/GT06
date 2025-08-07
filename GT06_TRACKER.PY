@@ -54,10 +54,13 @@ def handle_login(data):
         log(f"[LOGIN] Serial no encontrado, usando por defecto: {serial.hex()}")
     
     # Construir ACK: 7878 + 05 + 01 + serial + CRC16 + 0D0A
-    ack = b'\x78\x78\x05\x01' + serial
-    checksum = crc16(ack[2:])
-    ack += checksum + b'\x0D\x0A'
+    # El ACK debe ser: 7878 + 05 + 01 + serial + CRC16 + 0D0A
+    ack_data = b'\x05\x01' + serial  # Datos para calcular CRC (sin 7878)
+    checksum = crc16(ack_data)
+    ack = b'\x78\x78' + ack_data + checksum + b'\x0D\x0A'
     
+    log(f"[DEBUG] ACK data: {ack_data.hex()}")
+    log(f"[DEBUG] ACK CRC: {checksum.hex()}")
     log_sent(ack)
     return ack
 
