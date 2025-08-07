@@ -143,7 +143,7 @@ def validate_packet_crc(data):
         log("[DEBUG] CRC no coincide con ninguna variante")
         return False
 
-def handle_login(data, conn=None):
+def handle_login(data, conn_data=None):
     try:
         # Estructura del paquete de login: 7878 + length + 01 + IMEI(8) + serial(2) + error_check(2) + CRC16(2) + 0D0A
         if len(data) < 18:  # Longitud mínima del paquete de login (18 bytes para paquetes reales)
@@ -176,21 +176,21 @@ def handle_login(data, conn=None):
             serial = data[12:14]  # Serial está en bytes 12-13
             log(f"[LOGIN] Serial: {serial.hex()}")
             
-            # Guardar el serial en la conexión para posible reintento
-            if conn is not None:
-                conn.login_serial = serial
-                log(f"[DEBUG] Serial guardado en conexión: {serial.hex()}")
+            # Guardar el serial en los datos de conexión para posible reintento
+            if conn_data is not None:
+                conn_data['login_serial'] = serial
+                log(f"[DEBUG] Serial guardado en datos de conexión: {serial.hex()}")
             else:
-                log(f"[DEBUG] No hay conexión para guardar serial")
+                log(f"[DEBUG] No hay datos de conexión para guardar serial")
         else:
             # Si no hay serial, usar uno por defecto
             serial = b'\x00\x01'
             log(f"[LOGIN] Serial no encontrado, usando por defecto: {serial.hex()}")
-            if conn is not None:
-                conn.login_serial = serial
-                log(f"[DEBUG] Serial por defecto guardado en conexión: {serial.hex()}")
+            if conn_data is not None:
+                conn_data['login_serial'] = serial
+                log(f"[DEBUG] Serial por defecto guardado en datos de conexión: {serial.hex()}")
             else:
-                log(f"[DEBUG] No hay conexión para guardar serial por defecto")
+                log(f"[DEBUG] No hay datos de conexión para guardar serial por defecto")
         
         # Construir ACK: 7878 + 05 + 01 + serial + CRC16 + 0D0A
         # El ACK debe ser: 7878 + 05 + 01 + serial + CRC16 + 0D0A
@@ -304,6 +304,10 @@ def parse_position(data):
 
 def main():
     log(f"Servidor iniciado en {HOST}:{PORT}")
+    
+    # Diccionario para almacenar datos de conexiones
+    connection_data = {}
+    
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((HOST, PORT))
         s.listen()
@@ -312,6 +316,10 @@ def main():
                 conn, addr = s.accept()
                 with conn:
                     log(f"Conexion entrante desde {addr}")
+                    
+                    # Inicializar datos de esta conexión
+                    connection_data[conn] = {'login_serial': None, 'retry_sent': False}
+                    
                     while True:
                         data = conn.recv(1024)
                         if not data:
@@ -340,7 +348,7 @@ def main():
                             tipo_paquete = data[3]
 
                             if tipo_paquete == 0x01:  # Login
-                                respuesta = handle_login(data, conn)
+                                respuesta = handle_login(data, connection_data[conn])
                                 if respuesta is not None:
                                     conn.sendall(respuesta)
                                 else:
@@ -352,16 +360,17 @@ def main():
                                 # Si recibimos paquete de estado después del login, 
                                 # el ACK no fue reconocido, intentar con ACK alternativo
                                 try:
-                                    log(f"[DEBUG] Verificando atributos de conexión...")
-                                    log(f"[DEBUG] Tiene login_serial: {hasattr(conn, 'login_serial')}")
-                                    log(f"[DEBUG] Tiene retry_sent: {hasattr(conn, 'retry_sent')}")
+                                    conn_data = connection_data[conn]
+                                    log(f"[DEBUG] Verificando datos de conexión...")
+                                    log(f"[DEBUG] Tiene login_serial: {conn_data['login_serial'] is not None}")
+                                    log(f"[DEBUG] Tiene retry_sent: {conn_data['retry_sent']}")
                                     
-                                    if hasattr(conn, 'login_serial') and not hasattr(conn, 'retry_sent'):
+                                    if conn_data['login_serial'] is not None and not conn_data['retry_sent']:
                                         log(f"[RETRY] GPS envió estado en lugar de posición, reintentando ACK...")
-                                        log(f"[DEBUG] Serial para reintento: {conn.login_serial.hex()}")
-                                        send_alternative_ack(conn.login_serial, conn)
-                                        conn.retry_sent = True  # Marcar que ya se envió un reintento
-                                    elif hasattr(conn, 'retry_sent'):
+                                        log(f"[DEBUG] Serial para reintento: {conn_data['login_serial'].hex()}")
+                                        send_alternative_ack(conn_data['login_serial'], conn)
+                                        conn_data['retry_sent'] = True  # Marcar que ya se envió un reintento
+                                    elif conn_data['retry_sent']:
                                         log(f"[INFO] Reintento ya enviado, esperando respuesta del GPS...")
                                     else:
                                         log(f"[DEBUG] No se puede hacer reintento - falta login_serial")
@@ -371,6 +380,11 @@ def main():
                                 log(f"[WARNING] Tipo de paquete no reconocido: 0x{tipo_paquete:02X}")
                         else:
                             log("[ERROR] Paquete no comienza con cabecera 7878")
+                    
+                    # Limpiar datos de conexión al cerrar
+                    if conn in connection_data:
+                        del connection_data[conn]
+                        
             except socket.error as e:
                 log(f"[ERROR] Error de socket: {e}")
             except Exception as e:
