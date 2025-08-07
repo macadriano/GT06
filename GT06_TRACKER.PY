@@ -98,11 +98,12 @@ def send_alternative_ack(serial, conn):
     """
     ack_data = b'\x05\x01' + serial
     
-    # Probar con little-endian CRC
+    # Probar con little-endian CRC (más común en GT06)
     crc_le = crc16(ack_data)
     ack_le = b'\x78\x78' + ack_data + crc_le + b'\x0D\x0A'
     
     log(f"[RETRY] Enviando ACK alternativo con CRC little-endian: {ack_le.hex()}")
+    log(f"[RETRY] ACK data: {ack_data.hex()}, CRC: {crc_le.hex()}")
     conn.sendall(ack_le)
     log_sent(ack_le)
 
@@ -320,11 +321,12 @@ def main():
                             tipo_paquete = data[3]
 
                             if tipo_paquete == 0x01:  # Login
+                                # Guardar el serial para posible reintento ANTES de procesar
+                                if len(data) >= 14:
+                                    conn.login_serial = data[12:14]
+                                
                                 respuesta = handle_login(data)
                                 if respuesta is not None:
-                                    # Guardar el serial para posible reintento
-                                    if len(data) >= 14:
-                                        conn.login_serial = data[12:14]
                                     conn.sendall(respuesta)
                                 else:
                                     log("[ERROR] No se pudo procesar el login")
@@ -334,10 +336,12 @@ def main():
                                 log(f"[STATUS] Paquete de estado recibido (0x13)")
                                 # Si recibimos paquete de estado después del login, 
                                 # el ACK no fue reconocido, intentar con ACK alternativo
-                                if hasattr(conn, 'login_serial'):
+                                if hasattr(conn, 'login_serial') and not hasattr(conn, 'retry_sent'):
                                     log(f"[RETRY] GPS envió estado en lugar de posición, reintentando ACK...")
                                     send_alternative_ack(conn.login_serial, conn)
-                                    delattr(conn, 'login_serial')  # Limpiar para evitar reintentos infinitos
+                                    conn.retry_sent = True  # Marcar que ya se envió un reintento
+                                elif hasattr(conn, 'retry_sent'):
+                                    log(f"[INFO] Reintento ya enviado, esperando respuesta del GPS...")
                             else:
                                 log(f"[WARNING] Tipo de paquete no reconocido: 0x{tipo_paquete:02X}")
                         else:
