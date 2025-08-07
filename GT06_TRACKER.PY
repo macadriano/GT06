@@ -143,7 +143,7 @@ def validate_packet_crc(data):
         log("[DEBUG] CRC no coincide con ninguna variante")
         return False
 
-def handle_login(data):
+def handle_login(data, conn=None):
     # Estructura del paquete de login: 7878 + length + 01 + IMEI(8) + serial(2) + error_check(2) + CRC16(2) + 0D0A
     if len(data) < 18:  # Longitud mínima del paquete de login (18 bytes para paquetes reales)
         log(f"[ERROR] Paquete de login demasiado corto: {len(data)} bytes")
@@ -174,10 +174,16 @@ def handle_login(data):
     if len(data) >= 14:
         serial = data[12:14]  # Serial está en bytes 12-13
         log(f"[LOGIN] Serial: {serial.hex()}")
+        
+        # Guardar el serial en la conexión para posible reintento
+        if conn is not None:
+            conn.login_serial = serial
     else:
         # Si no hay serial, usar uno por defecto
         serial = b'\x00\x01'
         log(f"[LOGIN] Serial no encontrado, usando por defecto: {serial.hex()}")
+        if conn is not None:
+            conn.login_serial = serial
     
     # Construir ACK: 7878 + 05 + 01 + serial + CRC16 + 0D0A
     # El ACK debe ser: 7878 + 05 + 01 + serial + CRC16 + 0D0A
@@ -321,11 +327,7 @@ def main():
                             tipo_paquete = data[3]
 
                             if tipo_paquete == 0x01:  # Login
-                                # Guardar el serial para posible reintento ANTES de procesar
-                                if len(data) >= 14:
-                                    conn.login_serial = data[12:14]
-                                
-                                respuesta = handle_login(data)
+                                respuesta = handle_login(data, conn)
                                 if respuesta is not None:
                                     conn.sendall(respuesta)
                                 else:
