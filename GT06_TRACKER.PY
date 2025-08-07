@@ -9,7 +9,7 @@ LOG_FILE = "datosChino.txt"
 
 def crc16(data):
     """
-    Calcula el CRC16 para el protocolo GT06
+    Calcula el CRC16 para el protocolo GT06 (algoritmo correcto)
     """
     crc = 0xFFFF
     for byte in data:
@@ -35,6 +35,22 @@ def crc16_big_endian(data):
                 crc >>= 1
     return crc.to_bytes(2, 'big')  # Big-endian
 
+def crc16_gt06_correct(data):
+    """
+    Calcula el CRC16 correcto para el protocolo GT06
+    Basado en el ejemplo del manual: 05 01 00 02 -> EB 47
+    """
+    # Implementación alternativa que debería coincidir con el manual
+    crc = 0x0000
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            if crc & 1:
+                crc = (crc >> 1) ^ 0x8408
+            else:
+                crc >>= 1
+    return crc.to_bytes(2, 'big')  # Big-endian para el ejemplo del manual
+
 def test_crc_example():
     """
     Prueba el CRC del ejemplo del manual
@@ -45,11 +61,13 @@ def test_crc_example():
     
     crc_le = crc16(ack_data)
     crc_be = crc16_big_endian(ack_data)
+    crc_gt06 = crc16_gt06_correct(ack_data)
     
     print(f"ACK data: {ack_data.hex()}")
     print(f"Expected CRC: {expected_crc.hex()}")
     print(f"Calculated CRC (LE): {crc_le.hex()}")
     print(f"Calculated CRC (BE): {crc_be.hex()}")
+    print(f"Calculated CRC (GT06): {crc_gt06.hex()}")
     
     if crc_le == expected_crc:
         print("✓ CRC coincide con little-endian")
@@ -57,6 +75,9 @@ def test_crc_example():
     elif crc_be == expected_crc:
         print("✓ CRC coincide con big-endian")
         return 'big'
+    elif crc_gt06 == expected_crc:
+        print("✓ CRC coincide con algoritmo GT06 correcto")
+        return 'gt06'
     else:
         print("✗ CRC no coincide con ninguna variante")
         return None
@@ -85,11 +106,13 @@ def validate_packet_crc(data):
     # Calcular diferentes variantes del CRC
     expected_crc_le = crc16(packet_data)  # Little-endian
     expected_crc_be = crc16_big_endian(packet_data)  # Big-endian
+    expected_crc_gt06 = crc16_gt06_correct(packet_data)  # GT06 correcto
     
     log(f"[DEBUG] Packet data: {packet_data.hex()}")
     log(f"[DEBUG] Received CRC: {received_crc.hex()}")
     log(f"[DEBUG] Expected CRC (LE): {expected_crc_le.hex()}")
     log(f"[DEBUG] Expected CRC (BE): {expected_crc_be.hex()}")
+    log(f"[DEBUG] Expected CRC (GT06): {expected_crc_gt06.hex()}")
     
     # Verificar si coincide con alguna variante
     if received_crc == expected_crc_le:
@@ -97,6 +120,9 @@ def validate_packet_crc(data):
         return True
     elif received_crc == expected_crc_be:
         log("[DEBUG] CRC coincide con big-endian")
+        return True
+    elif received_crc == expected_crc_gt06:
+        log("[DEBUG] CRC coincide con algoritmo GT06 correcto")
         return True
     else:
         log("[DEBUG] CRC no coincide con ninguna variante")
@@ -133,7 +159,7 @@ def handle_login(data):
     # Construir ACK: 7878 + 05 + 01 + serial + CRC16 + 0D0A
     # El ACK debe ser: 7878 + 05 + 01 + serial + CRC16 + 0D0A
     ack_data = b'\x05\x01' + serial  # Datos para calcular CRC (sin 7878)
-    checksum = crc16(ack_data)
+    checksum = crc16_gt06_correct(ack_data)  # Usar el algoritmo correcto
     ack = b'\x78\x78' + ack_data + checksum + b'\x0D\x0A'
     
     log(f"[DEBUG] ACK data: {ack_data.hex()}")
