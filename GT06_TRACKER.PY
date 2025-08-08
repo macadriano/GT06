@@ -69,49 +69,6 @@ def crc16_itu_factory_bytes_be(data):
     crc = crc16_itu_factory(data)
     return bytes([(crc >> 8) & 0xFF, crc & 0xFF])
 
-def crc16(data):
-    """
-    Calcula el CRC16 para el protocolo GT06 (algoritmo correcto)
-    """
-    crc = 0xFFFF
-    for byte in data:
-        crc ^= byte
-        for _ in range(8):
-            if crc & 1:
-                crc = (crc >> 1) ^ 0xA001
-            else:
-                crc >>= 1
-    return crc.to_bytes(2, 'little')  # GT06 usa little-endian para CRC
-
-def crc16_big_endian(data):
-    """
-    Calcula el CRC16 en big-endian (alternativa)
-    """
-    crc = 0xFFFF
-    for byte in data:
-        crc ^= byte
-        for _ in range(8):
-            if crc & 1:
-                crc = (crc >> 1) ^ 0xA001
-            else:
-                crc >>= 1
-    return crc.to_bytes(2, 'big')  # Big-endian
-
-def crc16_gt06_correct(data):
-    """
-    Calcula el CRC16 correcto para el protocolo GT06
-    Algoritmo oficial del GT06 (polinomio 0xA001, valor inicial 0xFFFF)
-    """
-    crc = 0xFFFF
-    for byte in data:
-        crc ^= byte
-        for _ in range(8):
-            if crc & 1:
-                crc = (crc >> 1) ^ 0xA001
-            else:
-                crc >>= 1
-    return crc.to_bytes(2, 'big')  # Big-endian para ACK
-
 def test_crc_example():
     """
     Prueba el CRC del ejemplo del manual
@@ -120,39 +77,23 @@ def test_crc_example():
     ack_data = b'\x05\x01\x00\x02'
     expected_crc = b'\xEB\x47'  # CRC del ejemplo
     
-    crc_le = crc16(ack_data)
-    crc_be = crc16_big_endian(ack_data)
-    crc_gt06 = crc16_gt06_correct(ack_data)
     crc_itu_le = crc16_itu_factory_bytes(ack_data)
     crc_itu_be = crc16_itu_factory_bytes_be(ack_data)
     
     print(f"ACK data: {ack_data.hex()}")
     print(f"Expected CRC: {expected_crc.hex()}")
-    print(f"Calculated CRC (LE): {crc_le.hex()}")
-    print(f"Calculated CRC (BE): {crc_be.hex()}")
-    print(f"Calculated CRC (GT06): {crc_gt06.hex()}")
     print(f"Calculated CRC (ITU LE): {crc_itu_le.hex()}")
     print(f"Calculated CRC (ITU BE): {crc_itu_be.hex()}")
     
-    if crc_le == expected_crc:
-        print("✓ CRC coincide con little-endian")
-        return 'little'
-    elif crc_be == expected_crc:
-        print("✓ CRC coincide con big-endian")
-        return 'big'
-    elif crc_gt06 == expected_crc:
-        print("✓ CRC coincide con algoritmo GT06 correcto")
-        return 'gt06'
-    elif crc_itu_le == expected_crc:
+    if crc_itu_le == expected_crc:
         print("✓ CRC coincide con algoritmo CRC-ITU del fabricante (LE)")
         return 'itu_le'
     elif crc_itu_be == expected_crc:
         print("✓ CRC coincide con algoritmo CRC-ITU del fabricante (BE)")
         return 'itu_be'
     else:
-        print("✗ CRC no coincide con ninguna variante")
-        print("Nota: Usando algoritmo oficial del GT06 (polinomio 0xA001)")
-        return 'official'
+        print("✗ CRC no coincide con ninguna variante del fabricante")
+        return 'none'
 
 def log(message):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -166,23 +107,11 @@ def log_sent(data):
 
 def send_alternative_ack(serial, conn, ack_type='itu_le'):
     """
-    Envía un ACK alternativo con diferentes tipos de CRC
+    Envía un ACK con CRC-ITU del fabricante
     """
     ack_data = b'\x05\x01' + serial
     
-    if ack_type == 'le':
-        # Little-endian CRC
-        crc = crc16(ack_data)
-        log(f"[ACK_LE] Enviando ACK con CRC little-endian: {ack_data.hex()}, CRC: {crc.hex()}")
-    elif ack_type == 'be':
-        # Big-endian CRC
-        crc = crc16_big_endian(ack_data)
-        log(f"[ACK_BE] Enviando ACK con CRC big-endian: {ack_data.hex()}, CRC: {crc.hex()}")
-    elif ack_type == 'gt06':
-        # GT06 oficial CRC
-        crc = crc16_gt06_correct(ack_data)
-        log(f"[ACK_GT06] Enviando ACK con CRC GT06 oficial: {ack_data.hex()}, CRC: {crc.hex()}")
-    elif ack_type == 'itu_le':
+    if ack_type == 'itu_le':
         # CRC-ITU del fabricante (Little-Endian)
         crc = crc16_itu_factory_bytes(ack_data)
         log(f"[ACK_ITU_LE] Enviando ACK con CRC-ITU del fabricante (LE): {ack_data.hex()}, CRC: {crc.hex()}")
@@ -201,11 +130,11 @@ def send_alternative_ack(serial, conn, ack_type='itu_le'):
 def auto_retry_ack(serial, conn, conn_data):
     """
     Sistema automático de reintentos de ACK
-    Prueba diferentes tipos de CRC automáticamente
+    Prueba solo las dos versiones del CRC-ITU del fabricante
     """
     def retry_thread():
-        # Tipos de ACK a probar en orden (priorizando el CRC-ITU del fabricante)
-        ack_types = ['itu_le', 'itu_be', 'le', 'be', 'gt06']
+        # Solo probar las dos versiones del CRC-ITU del fabricante
+        ack_types = ['itu_le', 'itu_be']
         current_ack = 0
         
         # Esperar 3 segundos antes del primer reintento
@@ -216,7 +145,7 @@ def auto_retry_ack(serial, conn, conn_data):
                 break
                 
             ack_type = ack_types[current_ack]
-            log(f"[AUTO_RETRY] Intento {current_ack + 1}/{len(ack_types)}: Probando ACK tipo '{ack_type}'")
+            log(f"[AUTO_RETRY] Intento {current_ack + 1}/2: Probando ACK tipo '{ack_type}'")
             
             try:
                 send_alternative_ack(serial, conn, ack_type)
@@ -241,7 +170,7 @@ def auto_retry_ack(serial, conn, conn_data):
 
 def validate_packet_crc(data):
     """
-    Valida el CRC16 de un paquete recibido
+    Valida el CRC16 de un paquete recibido usando solo CRC-ITU del fabricante
     """
     if len(data) < 6:  # Mínimo: 7878 + length + data + CRC16 + 0D0A
         return False
@@ -250,39 +179,24 @@ def validate_packet_crc(data):
     packet_data = data[2:-4]  # Sin 7878 y sin CRC16 + 0D0A
     received_crc = data[-4:-2]  # CRC recibido
     
-    # Calcular diferentes variantes del CRC
-    expected_crc_le = crc16(packet_data)  # Little-endian
-    expected_crc_be = crc16_big_endian(packet_data)  # Big-endian
-    expected_crc_gt06 = crc16_gt06_correct(packet_data)  # GT06 correcto
+    # Calcular solo las dos versiones del CRC-ITU del fabricante
     expected_crc_itu_le = crc16_itu_factory_bytes(packet_data)  # CRC-ITU LE
     expected_crc_itu_be = crc16_itu_factory_bytes_be(packet_data)  # CRC-ITU BE
     
     log(f"[DEBUG] Packet data: {packet_data.hex()}")
     log(f"[DEBUG] Received CRC: {received_crc.hex()}")
-    log(f"[DEBUG] Expected CRC (LE): {expected_crc_le.hex()}")
-    log(f"[DEBUG] Expected CRC (BE): {expected_crc_be.hex()}")
-    log(f"[DEBUG] Expected CRC (GT06): {expected_crc_gt06.hex()}")
     log(f"[DEBUG] Expected CRC (ITU LE): {expected_crc_itu_le.hex()}")
     log(f"[DEBUG] Expected CRC (ITU BE): {expected_crc_itu_be.hex()}")
     
-    # Verificar si coincide con alguna variante
-    if received_crc == expected_crc_le:
-        log("[DEBUG] CRC coincide con little-endian")
-        return True
-    elif received_crc == expected_crc_be:
-        log("[DEBUG] CRC coincide con big-endian")
-        return True
-    elif received_crc == expected_crc_gt06:
-        log("[DEBUG] CRC coincide con algoritmo GT06 correcto")
-        return True
-    elif received_crc == expected_crc_itu_le:
+    # Verificar si coincide con alguna variante del fabricante
+    if received_crc == expected_crc_itu_le:
         log("[DEBUG] CRC coincide con algoritmo CRC-ITU del fabricante (LE)")
         return True
     elif received_crc == expected_crc_itu_be:
         log("[DEBUG] CRC coincide con algoritmo CRC-ITU del fabricante (BE)")
         return True
     else:
-        log("[DEBUG] CRC no coincide con ninguna variante")
+        log("[DEBUG] CRC no coincide con ninguna variante del fabricante")
         return False
 
 def handle_login(data, conn_data=None):
@@ -292,20 +206,16 @@ def handle_login(data, conn_data=None):
             log(f"[ERROR] Paquete de login demasiado corto: {len(data)} bytes")
             return None
         
-        # Validar CRC del paquete recibido (permitir CRC diferente para dispositivos reales)
+        # Validar CRC del paquete recibido usando solo CRC-ITU del fabricante
         received_crc = data[-4:-2]  # CRC recibido del paquete de login
         packet_data = data[2:-4]    # Datos del paquete para calcular CRC
         
-        # Calcular diferentes variantes del CRC para el paquete de login
-        expected_crc_le = crc16(packet_data)
-        expected_crc_be = crc16_big_endian(packet_data)
-        expected_crc_gt06 = crc16_gt06_correct(packet_data)
+        # Calcular solo las dos versiones del CRC-ITU del fabricante
         expected_crc_itu_le = crc16_itu_factory_bytes(packet_data)
         expected_crc_itu_be = crc16_itu_factory_bytes_be(packet_data)
         
         if not validate_packet_crc(data):
-            log("[WARNING] CRC del paquete de login no coincide, pero continuando...")
-            # No retornar None, continuar procesando de todas formas
+            log("[WARNING] CRC del paquete de login no coincide con variantes del fabricante, pero continuando...")
             
         # Extraer IMEI - puede estar en diferentes posiciones según el dispositivo
         if len(data) >= 12:
@@ -337,34 +247,18 @@ def handle_login(data, conn_data=None):
                 log(f"[DEBUG] No hay datos de conexión para guardar serial por defecto")
         
         # Construir ACK: 7878 + 05 + 01 + serial + CRC16 + 0D0A
-        # El ACK debe ser: 7878 + 05 + 01 + serial + CRC16 + 0D0A
         ack_data = b'\x05\x01' + serial  # Datos para calcular CRC (sin 7878)
         
-        # Probar diferentes algoritmos de CRC para el ACK
-        crc_le = crc16(ack_data)
-        crc_be = crc16_big_endian(ack_data)
-        crc_gt06 = crc16_gt06_correct(ack_data)
+        # Calcular solo las dos versiones del CRC-ITU del fabricante
         crc_itu_le = crc16_itu_factory_bytes(ack_data)
         crc_itu_be = crc16_itu_factory_bytes_be(ack_data)
         
         log(f"[DEBUG] ACK data: {ack_data.hex()}")
-        log(f"[DEBUG] ACK CRC (LE): {crc_le.hex()}")
-        log(f"[DEBUG] ACK CRC (BE): {crc_be.hex()}")
-        log(f"[DEBUG] ACK CRC (GT06): {crc_gt06.hex()}")
         log(f"[DEBUG] ACK CRC (ITU LE): {crc_itu_le.hex()}")
         log(f"[DEBUG] ACK CRC (ITU BE): {crc_itu_be.hex()}")
         
         # Intentar usar el mismo algoritmo que coincidió con el paquete de login
-        if received_crc == expected_crc_le:
-            checksum = crc_le
-            log("[DEBUG] Usando CRC little-endian para ACK")
-        elif received_crc == expected_crc_be:
-            checksum = crc_be
-            log("[DEBUG] Usando CRC big-endian para ACK")
-        elif received_crc == expected_crc_gt06:
-            checksum = crc_gt06
-            log("[DEBUG] Usando CRC GT06 para ACK")
-        elif received_crc == expected_crc_itu_le:
+        if received_crc == expected_crc_itu_le:
             checksum = crc_itu_le
             log("[DEBUG] Usando CRC-ITU del fabricante (LE) para ACK")
         elif received_crc == expected_crc_itu_be:
