@@ -113,7 +113,7 @@ def send_alternative_ack(serial, conn, ack_type='itu_le'):
     """
     Envía un ACK con CRC-ITU del fabricante
     """
-    ack_data = b'\x04\x01' + serial
+    ack_data = b'\x05\x01' + serial  # Formato correcto según especificaciones
     
     if ack_type == 'itu_le':
         # CRC-ITU del fabricante (Little-Endian)
@@ -344,8 +344,8 @@ def handle_login(data, conn_data=None):
             else:
                 log(f"[DEBUG] No hay datos de conexión para guardar serial por defecto")
         
-        # Construir ACK: 7878 + 04 + 01 + serial + CRC16 + 0D0A
-        ack_data = b'\x04\x01' + serial  # Datos para calcular CRC (sin 7878)
+        # Construir ACK: 7878 + 05 + 01 + serial + CRC16 + 0D0A (formato correcto según especificaciones)
+        ack_data = b'\x05\x01' + serial  # Datos para calcular CRC (sin 7878)
         
         # Calcular solo las dos versiones del CRC-ITU del fabricante
         crc_itu_le = crc16_itu_factory_bytes(ack_data)
@@ -411,8 +411,8 @@ def handle_position_direct(data, conn_data=None):
             serial = b'\x00\x01'
             log(f"[POSICION_DIRECTA] Usando serial por defecto: {serial.hex()}")
         
-        # Construir ACK: 7878 + 04 + 01 + serial + CRC16 + 0D0A
-        ack_data = b'\x04\x01' + serial
+        # Construir ACK: 7878 + 05 + 01 + serial + CRC16 + 0D0A (formato correcto según especificaciones)
+        ack_data = b'\x05\x01' + serial
         
         # Usar CRC-ITU del fabricante (BE) como primera opción para posición directa
         crc_itu_be = crc16_itu_factory_bytes_be(ack_data)
@@ -446,7 +446,7 @@ def handle_heartbeat_direct(data, conn_data=None):
         
         # Enviar ACK de confirmación
         serial = b'\x00\x01'  # Serial por defecto
-        ack_data = b'\x04\x01' + serial
+        ack_data = b'\x05\x01' + serial  # Formato correcto según especificaciones
         crc_itu_be = crc16_itu_factory_bytes_be(ack_data)
         ack = b'\x78\x78' + ack_data + crc_itu_be + b'\x0D\x0A'
         
@@ -491,7 +491,7 @@ def handle_alarm_direct(data, conn_data=None):
         
         # Enviar ACK de confirmación
         serial = b'\x00\x01'  # Serial por defecto
-        ack_data = b'\x04\x01' + serial
+        ack_data = b'\x05\x01' + serial  # Formato correcto según especificaciones
         crc_itu_be = crc16_itu_factory_bytes_be(ack_data)
         ack = b'\x78\x78' + ack_data + crc_itu_be + b'\x0D\x0A'
         
@@ -734,8 +734,8 @@ def main():
                                              status_serial = status_info[-2:]  # Últimos 2 bytes
                                              log(f"[STATUS] Serial del estado: {status_serial.hex()}")
                                              
-                                             # Enviar ACK específico para el estado
-                                             ack_data = b'\x04\x01' + status_serial
+                                                                                           # Enviar ACK específico para el estado
+                                              ack_data = b'\x05\x01' + status_serial  # Formato correcto según especificaciones
                                              crc_be = crc16_itu_factory_bytes_be(ack_data)
                                              ack = b'\x78\x78' + ack_data + crc_be + b'\x0D\x0A'
                                              conn.sendall(ack)
