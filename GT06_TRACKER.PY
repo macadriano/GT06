@@ -9,6 +9,10 @@ pp = 4994
 
 LOG_FILE = "datosChino.txt"
 
+# Comando para configurar el dispositivo en modo de transmisión directa (sin login)
+# Ajusta este valor según el manual de tu fabricante si difiere
+DIRECT_MODE_COMMAND = b"MODE,1#"
+
 # Tabla CRC-ITU del fabricante (CRC-CCITT)
 CRC_TAB16 = [
     0x0000, 0x1189, 0x2312, 0x329B, 0x4624, 0x57AD, 0x6536, 0x74BF,
@@ -127,40 +131,109 @@ def send_alternative_ack(serial, conn, ack_type='itu_le'):
     conn.sendall(ack)
     log_sent(ack)
 
+def build_server_command_packet(command_ascii: bytes, serial: bytes, crc_variant: str = 'itu_be') -> bytes:
+    """
+    Construye un paquete de comando hacia el dispositivo (protocolo 0x80) con framing 0x7878.
+    command_ascii: Contenido ASCII del comando, por ejemplo b"MODE,1#".
+    serial: Número de serie de 2 bytes.
+    crc_variant: 'itu_le' o 'itu_be'.
+    """
+    protocol_no = 0x80
+    if not isinstance(command_ascii, (bytes, bytearray)):
+        raise ValueError("command_ascii debe ser bytes")
+    if not isinstance(serial, (bytes, bytearray)) or len(serial) != 2:
+        raise ValueError("serial debe ser bytes de longitud 2")
+
+    # length = protocolo(1) + contenido(len) + serial(2)
+    body = bytes([1 + len(command_ascii) + 2, protocol_no]) + command_ascii + serial
+
+    if crc_variant == 'itu_le':
+        crc = crc16_itu_factory_bytes(body)
+    else:
+        crc = crc16_itu_factory_bytes_be(body)
+
+    return b"\x78\x78" + body + crc + b"\x0D\x0A"
+
+def send_direct_mode_command(conn, conn_data: dict):
+    """
+    Envía el comando para configurar el equipo en modo directo (sin login) usando 0x80.
+    Elige automáticamente la variante de CRC a partir de lo observado en el login.
+    """
+    try:
+        if conn_data is None:
+            log("[CMD] No hay datos de conexión para enviar comando de modo directo")
+            return
+
+        if conn_data.get('direct_cfg_sent'):
+            return
+
+        serial = conn_data.get('login_serial') or b"\x00\x01"
+        crc_variant = conn_data.get('login_ack_type') or 'itu_be'
+
+        packet = build_server_command_packet(DIRECT_MODE_COMMAND, serial, crc_variant)
+        log(f"[CMD] Enviando comando de modo directo ({crc_variant}): {packet.hex()}")
+        conn.sendall(packet)
+        log_sent(packet)
+        conn_data['direct_cfg_sent'] = True
+    except Exception as e:
+        log(f"[ERROR] Error enviando comando de modo directo: {e}")
+
 def auto_retry_ack(serial, conn, conn_data):
     """
     Sistema automático de reintentos de ACK
     Prueba solo las dos versiones del CRC-ITU del fabricante
     """
     def retry_thread():
-        # Solo probar  itu_le', 'itu_be' zzzz]
+        # Usar el mismo tipo de ACK que funcionó para el login, o probar ambos si no se sabe
+        login_ack_type = conn_data.get('login_ack_type')
+        if login_ack_type:
+            # Si sabemos qué tipo funcionó para el login, usar ese primero
+            ack_types = [login_ack_type]
+            log(f"[AUTO_RETRY] Usando el mismo tipo de ACK que funcionó para el login: {login_ack_type}")
+        else:
+            # Si no sabemos, probar ambos
+            ack_types = ['itu_le', 'itu_be']
+            log(f"[AUTO_RETRY] Probando ambos tipos de ACK del fabricante")
+        
         current_ack = 0
-        pepe=0
-        # Esperar 3 segundos antes del primer reintento
-        time.sleep(3)
+        max_retries_per_type = 3  # Máximo 3 intentos por tipo de ACK
+        
+        # Esperar 2 segundos antes del primer reintento
+        time.sleep(2)
         
         while current_ack < len(ack_types) and not conn_data.get('ack_success', False):
             if conn_data.get('connection_closed', False):
                 break
                 
             ack_type = ack_types[current_ack]
-            log(f"[AUTO_RETRY] Intento {current_ack + 1}/2: Probando ACK tipo '{ack_type}'")
             
-            try:
-                send_alternative_ack(serial, conn, ack_type)
-                conn_data['current_ack_type'] = ack_type
-                conn_data['ack_attempts'] = conn_data.get('ack_attempts', 0) + 1
+            # Probar múltiples veces el mismo tipo de ACK
+            for retry in range(max_retries_per_type):
+                if conn_data.get('ack_success', False):
+                    break
+                    
+                log(f"[AUTO_RETRY] Intento {current_ack + 1}/{len(ack_types)} (retry {retry + 1}/{max_retries_per_type}): Probando ACK tipo '{ack_type}'")
                 
-                # Esperar 5 segundos antes del siguiente intento
-                time.sleep(5)
-                current_ack += 1
-                
-            except Exception as e:
-                log(f"[ERROR] Error en auto_retry_ack: {e}")
-                break
+                try:
+                    send_alternative_ack(serial, conn, ack_type)
+                    conn_data['current_ack_type'] = ack_type
+                    conn_data['ack_attempts'] = conn_data.get('ack_attempts', 0) + 1
+                    
+                    # Esperar 2 segundos antes del siguiente intento del mismo tipo
+                    time.sleep(2)
+                    
+                except Exception as e:
+                    log(f"[ERROR] Error en auto_retry_ack: {e}")
+                    break
+            
+            # Pasar al siguiente tipo de ACK
+            current_ack += 1
         
         if not conn_data.get('ack_success', False):
-            log(f"[AUTO_RETRY] Completados {len(ack_types)} intentos sin éxito")
+            total_attempts = len(ack_types) * max_retries_per_type
+            log(f"[AUTO_RETRY] Completados {total_attempts} intentos sin éxito")
+        else:
+            log(f"[AUTO_RETRY] ACK exitoso después de {conn_data.get('ack_attempts', 0)} intentos")
     
     # Iniciar thread de reintentos
     retry_thread = threading.Thread(target=retry_thread, daemon=True)
@@ -260,13 +333,21 @@ def handle_login(data, conn_data=None):
         if received_crc == expected_crc_itu_le:
             checksum = crc_itu_le
             log("[DEBUG] Usando CRC-ITU del fabricante (LE) para ACK")
+            # Guardar el tipo de ACK que funcionó para el login
+            if conn_data is not None:
+                conn_data['login_ack_type'] = 'itu_le'
         elif received_crc == expected_crc_itu_be:
             checksum = crc_itu_be
             log("[DEBUG] Usando CRC-ITU del fabricante (BE) para ACK")
+            # Guardar el tipo de ACK que funcionó para el login
+            if conn_data is not None:
+                conn_data['login_ack_type'] = 'itu_be'
         else:
             # Si ninguno coincide, usar CRC-ITU del fabricante (LE) como primera opción
             checksum = crc_itu_le
             log("[DEBUG] Ningún CRC coincide, usando CRC-ITU del fabricante (LE) para ACK")
+            if conn_data is not None:
+                conn_data['login_ack_type'] = 'itu_le'
         
         ack = b'\x78\x78' + ack_data + checksum + b'\x0D\x0A'
         log_sent(ack)
@@ -277,6 +358,145 @@ def handle_login(data, conn_data=None):
         import traceback
         log(f"[ERROR] Traceback: {traceback.format_exc()}")
         return None
+
+def handle_position_direct(data, conn_data=None):
+    """
+    Maneja paquetes de posición que llegan directamente sin login previo
+    (Modo de transmisión continua)
+    """
+    try:
+        log(f"[POSICION_DIRECTA] Dispositivo enviando posición sin login previo")
+        
+        # Validar CRC del paquete de posición
+        if not validate_packet_crc(data):
+            log("[WARNING] CRC del paquete de posición no coincide, pero continuando...")
+        
+        # Extraer información del paquete de posición
+        parse_position(data)
+        
+        # Enviar ACK de confirmación
+        # Para posición directa, usar serial por defecto o extraer del paquete
+        if len(data) >= 25:
+            # Intentar extraer serial del paquete de posición
+            serial = data[23:25]  # Serial en posición 23-24
+            log(f"[POSICION_DIRECTA] Serial extraído del paquete: {serial.hex()}")
+        else:
+            # Usar serial por defecto
+            serial = b'\x00\x01'
+            log(f"[POSICION_DIRECTA] Usando serial por defecto: {serial.hex()}")
+        
+        # Construir ACK: 7878 + 05 + 01 + serial + CRC16 + 0D0A
+        ack_data = b'\x05\x01' + serial
+        
+        # Usar CRC-ITU del fabricante (BE) como primera opción para posición directa
+        crc_itu_be = crc16_itu_factory_bytes_be(ack_data)
+        ack = b'\x78\x78' + ack_data + crc_itu_be + b'\x0D\x0A'
+        
+        log(f"[POSICION_DIRECTA] Enviando ACK: {ack.hex()}")
+        return ack
+        
+    except Exception as e:
+        log(f"[ERROR] Error en handle_position_direct: {e}")
+        return None
+
+def handle_heartbeat_direct(data, conn_data=None):
+    """
+    Maneja paquetes de heartbeat que llegan directamente sin login previo
+    """
+    try:
+        log(f"[HEARTBEAT_DIRECTA] Dispositivo enviando heartbeat sin login previo")
+        
+        # Validar CRC del paquete de heartbeat
+        if not validate_packet_crc(data):
+            log("[WARNING] CRC del paquete de heartbeat no coincide, pero continuando...")
+        
+        # Parsear información del heartbeat si es posible
+        try:
+            if len(data) >= 8:
+                heartbeat_info = data[4:-4]  # Sin cabecera y sin CRC
+                log(f"[HEARTBEAT_DIRECTA] Información: {heartbeat_info.hex()}")
+        except Exception as e:
+            log(f"[ERROR] Error parseando heartbeat: {e}")
+        
+        # Enviar ACK de confirmación
+        serial = b'\x00\x01'  # Serial por defecto
+        ack_data = b'\x05\x01' + serial
+        crc_itu_be = crc16_itu_factory_bytes_be(ack_data)
+        ack = b'\x78\x78' + ack_data + crc_itu_be + b'\x0D\x0A'
+        
+        log(f"[HEARTBEAT_DIRECTA] Enviando ACK: {ack.hex()}")
+        return ack
+        
+    except Exception as e:
+        log(f"[ERROR] Error en handle_heartbeat_direct: {e}")
+        return None
+
+def handle_alarm_direct(data, conn_data=None):
+    """
+    Maneja paquetes de alarma que llegan directamente sin login previo
+    """
+    try:
+        log(f"[ALARMA_DIRECTA] Dispositivo enviando alarma sin login previo")
+        
+        # Validar CRC del paquete de alarma
+        if not validate_packet_crc(data):
+            log("[WARNING] CRC del paquete de alarma no coincide, pero continuando...")
+        
+        # Parsear información de la alarma
+        try:
+            if len(data) >= 8:
+                alarm_info = data[4:-4]  # Sin cabecera y sin CRC
+                log(f"[ALARMA_DIRECTA] Información de alarma: {alarm_info.hex()}")
+                
+                # Determinar tipo de alarma
+                if len(alarm_info) >= 1:
+                    alarm_type = alarm_info[0]
+                    alarm_types = {
+                        0x01: "SOS",
+                        0x02: "Batería baja", 
+                        0x03: "Movimiento",
+                        0x04: "Geocerca",
+                        0x05: "Impacto"
+                    }
+                    alarm_name = alarm_types.get(alarm_type, f"Desconocida (0x{alarm_type:02X})")
+                    log(f"[ALARMA_DIRECTA] Tipo de alarma: {alarm_name}")
+        except Exception as e:
+            log(f"[ERROR] Error parseando alarma: {e}")
+        
+        # Enviar ACK de confirmación
+        serial = b'\x00\x01'  # Serial por defecto
+        ack_data = b'\x05\x01' + serial
+        crc_itu_be = crc16_itu_factory_bytes_be(ack_data)
+        ack = b'\x78\x78' + ack_data + crc_itu_be + b'\x0D\x0A'
+        
+        log(f"[ALARMA_DIRECTA] Enviando ACK: {ack.hex()}")
+        return ack
+        
+    except Exception as e:
+        log(f"[ERROR] Error en handle_alarm_direct: {e}")
+        return None
+
+def detect_transmission_mode(data):
+    """
+    Detecta si el dispositivo está en modo de transmisión continua
+    (envía datos directamente sin login previo)
+    """
+    if len(data) < 4:
+        return False
+    
+    # Verificar si es un paquete de posición directa (0x12)
+    if data[3] == 0x12:
+        return True
+    
+    # Verificar si es un paquete de heartbeat directo (0x23)
+    if data[3] == 0x23:
+        return True
+    
+    # Verificar si es un paquete de alarma directa (0x26)
+    if data[3] == 0x26:
+        return True
+    
+    return False
 
 def parse_position(data):
     try:
@@ -372,7 +592,9 @@ def main():
                         'ack_attempts': 0,
                         'current_ack_type': None,
                         'connection_closed': False,
-                        'retry_thread': None
+                        'retry_thread': None,
+                        'transmission_mode': None,  # 'login' o 'direct'
+                        'first_packet': True
                     }
                     
                     while True:
@@ -401,6 +623,20 @@ def main():
                                     # Continuar procesando de todas formas
                             
                             tipo_paquete = data[3]
+                            conn_data = connection_data[conn]
+                            
+                            # Detectar modo de transmisión en el primer paquete
+                            if conn_data['first_packet']:
+                                if tipo_paquete == 0x01:
+                                    conn_data['transmission_mode'] = 'login'
+                                    log(f"[MODO] Dispositivo en modo login (0x01)")
+                                elif detect_transmission_mode(data):
+                                    conn_data['transmission_mode'] = 'direct'
+                                    log(f"[MODO] Dispositivo en modo transmisión continua (0x{tipo_paquete:02X})")
+                                else:
+                                    conn_data['transmission_mode'] = 'unknown'
+                                    log(f"[MODO] Modo de transmisión desconocido (0x{tipo_paquete:02X})")
+                                conn_data['first_packet'] = False
 
                             if tipo_paquete == 0x01:  # Login
                                 respuesta = handle_login(data, connection_data[conn])
@@ -411,8 +647,31 @@ def main():
                                     if conn_data['login_serial'] is not None:
                                         log(f"[AUTO_RETRY] Iniciando sistema automático de reintentos para serial: {conn_data['login_serial'].hex()}")
                                         auto_retry_ack(conn_data['login_serial'], conn, conn_data)
+                                    # Enviar comando para modo directo (solo una vez)
+                                    send_direct_mode_command(conn, conn_data)
                                 else:
                                     log("[ERROR] No se pudo procesar el login")
+                            elif tipo_paquete == 0x12 and conn_data['transmission_mode'] == 'direct':  # Posición directa
+                                respuesta = handle_position_direct(data, conn_data)
+                                if respuesta is not None:
+                                    conn.sendall(respuesta)
+                                    log(f"[SUCCESS] ACK enviado para posición directa")
+                                else:
+                                    log("[ERROR] No se pudo procesar la posición directa")
+                            elif tipo_paquete == 0x23 and conn_data['transmission_mode'] == 'direct':  # Heartbeat directo
+                                respuesta = handle_heartbeat_direct(data, conn_data)
+                                if respuesta is not None:
+                                    conn.sendall(respuesta)
+                                    log(f"[SUCCESS] ACK enviado para heartbeat directo")
+                                else:
+                                    log("[ERROR] No se pudo procesar el heartbeat directo")
+                            elif tipo_paquete == 0x26 and conn_data['transmission_mode'] == 'direct':  # Alarma directa
+                                respuesta = handle_alarm_direct(data, conn_data)
+                                if respuesta is not None:
+                                    conn.sendall(respuesta)
+                                    log(f"[SUCCESS] ACK enviado para alarma directa")
+                                else:
+                                    log("[ERROR] No se pudo procesar la alarma directa")
                             elif tipo_paquete == 0x12:  # Posición
                                 log(f"[SUCCESS] ¡ACK exitoso! GPS envió paquete de posición (0x12)")
                                 conn_data = connection_data[conn]
@@ -422,14 +681,35 @@ def main():
                                 parse_position(data)
                             elif tipo_paquete == 0x13:  # Estado del terminal
                                 log(f"[STATUS] Paquete de estado recibido (0x13) - ACK aún no reconocido")
-                                # El sistema automático ya está probando diferentes ACKs
                                 conn_data = connection_data[conn]
                                 if conn_data.get('ack_attempts', 0) > 0:
                                     log(f"[STATUS] Ya se han probado {conn_data['ack_attempts']} tipos de ACK")
                                 else:
                                     log(f"[STATUS] Sistema automático de reintentos en progreso...")
+                                
+                                # Parsear información del estado si es posible
+                                try:
+                                    if len(data) >= 8:
+                                        status_info = data[4:-4]  # Sin cabecera y sin CRC
+                                        log(f"[STATUS] Información de estado: {status_info.hex()}")
+                                except Exception as e:
+                                    log(f"[ERROR] Error parseando estado: {e}")
+                            elif tipo_paquete == 0x23:  # Heartbeat
+                                log(f"[HEARTBEAT] Paquete de heartbeat recibido (0x23) - ACK aún no reconocido")
+                                conn_data = connection_data[conn]
+                                if conn_data.get('ack_attempts', 0) > 0:
+                                    log(f"[HEARTBEAT] Dispositivo responde pero ACK no confirmado")
+                            elif tipo_paquete == 0x26:  # Alarma
+                                log(f"[ALARMA] Paquete de alarma recibido (0x26) - ACK aún no reconocido")
+                                # Parsear información de alarma si es posible
+                                try:
+                                    if len(data) >= 8:
+                                        alarm_info = data[4:-4]  # Sin cabecera y sin CRC
+                                        log(f"[ALARMA] Información de alarma: {alarm_info.hex()}")
+                                except Exception as e:
+                                    log(f"[ERROR] Error parseando alarma: {e}")
                             else:
-                                log(f"[WARNING] Tipo de paquete no reconocido: 0x{tipo_paquete:02X}")
+                                log(f"[WARNING] Tipo de paquete no reconocido: 0x{tipo_paquete:02X} - ACK aún no reconocido")
                         else:
                             log("[ERROR] Paquete no comienza con cabecera 7878")
                     
