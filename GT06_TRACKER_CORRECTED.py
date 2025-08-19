@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Servidor GT06 corregido con formato de ACK según especificaciones del fabricante
+Servidor GT06 corregido con múltiples estrategias de ACK y reintentos automáticos
 """
 
 import socket
@@ -61,6 +61,11 @@ def crc16_itu_factory_bytes_be(data):
     crc = crc16_itu_factory(data)
     return bytes([(crc >> 8) & 0xFF, crc & 0xFF])
 
+def crc16_itu_factory_bytes_le(data):
+    """CRC en formato bytes (little-endian)"""
+    crc = crc16_itu_factory(data)
+    return bytes([crc & 0xFF, (crc >> 8) & 0xFF])
+
 def log(message):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"{timestamp} {message}"
@@ -71,28 +76,94 @@ def log(message):
 def log_sent(data):
     log(f"[ENVIADO] {data.hex()}")
 
-def send_correct_ack(serial, conn):
+def send_ack_variant(serial, conn, variant="standard"):
     """
-    Envía el ACK correcto según especificaciones GT06
-    Formato: 7878 + 05 + 01 + serial + CRC + 0D0A
+    Envía diferentes variantes de ACK para probar cuál funciona
     """
-    # ACK data: length(05) + protocol(01) + serial(2 bytes)
-    ack_data = b'\x05\x01' + serial
+    if variant == "standard":
+        # ACK estándar: 7878 + 05 + 01 + serial + CRC + 0D0A
+        ack_data = b'\x05\x01' + serial
+        crc = crc16_itu_factory_bytes_be(ack_data)
+        ack = b'\x78\x78' + ack_data + crc + b'\x0D\x0A'
+        
+    elif variant == "manual_example":
+        # Basado en el ejemplo del manual: 7878 + 05 + 01 + 0002 + EB47 + 0D0A
+        ack_data = b'\x05\x01' + serial
+        crc = crc16_itu_factory_bytes_be(ack_data)
+        ack = b'\x78\x78' + ack_data + crc + b'\x0D\x0A'
+        
+    elif variant == "short_length":
+        # ACK con longitud 03: 7878 + 03 + 01 + serial + CRC + 0D0A
+        ack_data = b'\x03\x01' + serial
+        crc = crc16_itu_factory_bytes_be(ack_data)
+        ack = b'\x78\x78' + ack_data + crc + b'\x0D\x0A'
+        
+    elif variant == "le_crc":
+        # ACK con CRC little-endian
+        ack_data = b'\x05\x01' + serial
+        crc = crc16_itu_factory_bytes_le(ack_data)
+        ack = b'\x78\x78' + ack_data + crc + b'\x0D\x0A'
+        
+    elif variant == "no_crc":
+        # ACK sin CRC (solo para pruebas)
+        ack_data = b'\x05\x01' + serial
+        ack = b'\x78\x78' + ack_data + b'\x00\x00' + b'\x0D\x0A'
+        
+    else:
+        return None
     
-    # Calcular CRC sobre ack_data
-    crc = crc16_itu_factory_bytes_be(ack_data)
-    
-    # Construir ACK completo
-    ack = b'\x78\x78' + ack_data + crc + b'\x0D\x0A'
-    
-    log(f"[ACK] Enviando ACK correcto: {ack.hex()}")
-    log(f"[ACK] ACK data: {ack_data.hex()}")
-    log(f"[ACK] CRC: {crc.hex()}")
-    log(f"[ACK] Longitud total: {len(ack)} bytes")
+    log(f"[ACK_{variant.upper()}] Enviando ACK: {ack.hex()}")
+    log(f"[ACK_{variant.upper()}] ACK data: {ack_data.hex()}")
+    if variant != "no_crc":
+        log(f"[ACK_{variant.upper()}] CRC: {crc.hex()}")
+    log(f"[ACK_{variant.upper()}] Longitud total: {len(ack)} bytes")
     
     conn.sendall(ack)
     log_sent(ack)
     return ack
+
+def auto_retry_ack(serial, conn, conn_data):
+    """
+    Sistema automático de reintentos con diferentes variantes de ACK
+    """
+    def retry_thread():
+        log(f"[AUTO_RETRY] Iniciando sistema automático de reintentos para serial: {serial.hex()}")
+        
+        # Lista de variantes a probar
+        variants = [
+            "manual_example",  # Basado en el ejemplo del manual
+            "standard",        # ACK estándar
+            "le_crc",          # CRC little-endian
+            "short_length",    # Longitud 03
+            "no_crc"           # Sin CRC (último recurso)
+        ]
+        
+        for variant in variants:
+            for attempt in range(2):  # 2 intentos por variante
+                try:
+                    log(f"[AUTO_RETRY] Intento {attempt+1}/2: Probando ACK tipo '{variant}'")
+                    send_ack_variant(serial, conn, variant)
+                    
+                    # Esperar 3 segundos para ver si llega posición
+                    time.sleep(3)
+                    
+                    # Verificar si ya se recibió posición
+                    if conn_data.get('position_received', False):
+                        log(f"[AUTO_RETRY] ¡ÉXITO! ACK tipo '{variant}' funcionó")
+                        conn_data['successful_ack_type'] = variant
+                        return
+                        
+                except Exception as e:
+                    log(f"[AUTO_RETRY] Error en intento {attempt+1} con variante '{variant}': {e}")
+                
+                if attempt < 1:  # No esperar después del último intento de cada variante
+                    time.sleep(2)
+        
+        log(f"[AUTO_RETRY] Completados todos los intentos sin éxito")
+    
+    # Iniciar thread de reintentos
+    thread = threading.Thread(target=retry_thread, daemon=True)
+    thread.start()
 
 def validate_packet_crc(data):
     """
@@ -114,9 +185,9 @@ def validate_packet_crc(data):
     
     return received_crc == expected_crc
 
-def handle_login_corrected(data, conn):
+def handle_login_corrected(data, conn, conn_data):
     """
-    Maneja el login con ACK correcto según especificaciones
+    Maneja el login con múltiples estrategias de ACK
     """
     try:
         log(f"[LOGIN] === PROCESANDO LOGIN ===")
@@ -136,8 +207,15 @@ def handle_login_corrected(data, conn):
         log(f"[LOGIN] IMEI: {imei}")
         log(f"[LOGIN] Serial: {serial.hex()}")
         
-        # Enviar ACK correcto según especificaciones
-        ack = send_correct_ack(serial, conn)
+        # Guardar serial en datos de conexión
+        conn_data['login_serial'] = serial
+        conn_data['position_received'] = False
+        
+        # Enviar ACK inicial (estándar)
+        ack = send_ack_variant(serial, conn, "standard")
+        
+        # Iniciar sistema de reintentos automáticos
+        auto_retry_ack(serial, conn, conn_data)
         
         return ack
         
@@ -215,7 +293,7 @@ def parse_position_corrected(data):
 
 def main():
     log(f"[CORRECTED] Servidor GT06 corregido iniciado en {HOST}:{PORT}")
-    log(f"[CORRECTED] Usando formato de ACK correcto según especificaciones")
+    log(f"[CORRECTED] Usando múltiples estrategias de ACK y reintentos automáticos")
     
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((HOST, PORT))
@@ -226,6 +304,9 @@ def main():
                 conn, addr = s.accept()
                 with conn:
                     log(f"[CORRECTED] Conexión entrante desde {addr}")
+                    
+                    # Diccionario para almacenar datos de la conexión
+                    conn_data = {}
                     
                     while True:
                         data = conn.recv(1024)
@@ -247,7 +328,7 @@ def main():
                                 
                                 if protocol == 0x01:  # Login
                                     log("[CORRECTED] Procesando login...")
-                                    ack = handle_login_corrected(data, conn)
+                                    ack = handle_login_corrected(data, conn, conn_data)
                                     if ack:
                                         log("[CORRECTED] ✓ ACK de login enviado correctamente")
                                     else:
@@ -255,26 +336,30 @@ def main():
                                     
                                 elif protocol == 0x12:  # Posición
                                     log("[CORRECTED] ¡POSICIÓN RECIBIDA! ACK funcionó")
+                                    conn_data['position_received'] = True
+                                    
                                     if parse_position_corrected(data):
                                         log("[CORRECTED] ✓ Posición parseada correctamente")
                                         
-                                        # Enviar ACK para posición
+                                        # Enviar ACK para posición usando el tipo exitoso
                                         if len(data) >= 25:
                                             pos_serial = data[23:25]
-                                            send_correct_ack(pos_serial, conn)
-                                            log("[CORRECTED] ✓ ACK de posición enviado")
+                                            successful_type = conn_data.get('successful_ack_type', 'standard')
+                                            send_ack_variant(pos_serial, conn, successful_type)
+                                            log(f"[CORRECTED] ✓ ACK de posición enviado (tipo: {successful_type})")
                                     else:
                                         log("[CORRECTED] ✗ Error parseando posición")
                                     
                                 elif protocol == 0x13:  # Estado
                                     log("[CORRECTED] Estado recibido - ACK aún no reconocido")
-                                    # Enviar ACK para estado
+                                    # Enviar ACK para estado usando el tipo exitoso si está disponible
                                     if len(data) >= 8:
                                         status_info = data[4:-4]
                                         if len(status_info) >= 7:
                                             status_serial = status_info[-2:]
-                                            send_correct_ack(status_serial, conn)
-                                            log("[CORRECTED] ACK para estado enviado")
+                                            successful_type = conn_data.get('successful_ack_type', 'standard')
+                                            send_ack_variant(status_serial, conn, successful_type)
+                                            log(f"[CORRECTED] ACK para estado enviado (tipo: {successful_type})")
                                     
                                 elif protocol == 0x23:  # Heartbeat
                                     log("[CORRECTED] Heartbeat recibido")

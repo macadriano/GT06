@@ -1,0 +1,2 @@
+2025-08-19 20:45:21 [CORRECTED] Servidor GT06 corregido iniciado en 200.58.98.187:5003
+2025-08-19 20:45:21 [CORRECTED] Usando múltiples estrategias de ACK y reintentos automáticos
