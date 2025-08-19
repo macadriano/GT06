@@ -113,7 +113,7 @@ def send_alternative_ack(serial, conn, ack_type='itu_le'):
     """
     Envía un ACK con CRC-ITU del fabricante
     """
-    ack_data = b'\x03\x01' + serial
+    ack_data = b'\x04\x01' + serial
     
     if ack_type == 'itu_le':
         # CRC-ITU del fabricante (Little-Endian)
@@ -344,8 +344,8 @@ def handle_login(data, conn_data=None):
             else:
                 log(f"[DEBUG] No hay datos de conexión para guardar serial por defecto")
         
-        # Construir ACK: 7878 + 03 + 01 + serial + CRC16 + 0D0A
-        ack_data = b'\x03\x01' + serial  # Datos para calcular CRC (sin 7878)
+        # Construir ACK: 7878 + 04 + 01 + serial + CRC16 + 0D0A
+        ack_data = b'\x04\x01' + serial  # Datos para calcular CRC (sin 7878)
         
         # Calcular solo las dos versiones del CRC-ITU del fabricante
         crc_itu_le = crc16_itu_factory_bytes(ack_data)
@@ -411,8 +411,8 @@ def handle_position_direct(data, conn_data=None):
             serial = b'\x00\x01'
             log(f"[POSICION_DIRECTA] Usando serial por defecto: {serial.hex()}")
         
-        # Construir ACK: 7878 + 03 + 01 + serial + CRC16 + 0D0A
-        ack_data = b'\x03\x01' + serial
+        # Construir ACK: 7878 + 04 + 01 + serial + CRC16 + 0D0A
+        ack_data = b'\x04\x01' + serial
         
         # Usar CRC-ITU del fabricante (BE) como primera opción para posición directa
         crc_itu_be = crc16_itu_factory_bytes_be(ack_data)
@@ -446,7 +446,7 @@ def handle_heartbeat_direct(data, conn_data=None):
         
         # Enviar ACK de confirmación
         serial = b'\x00\x01'  # Serial por defecto
-        ack_data = b'\x03\x01' + serial
+        ack_data = b'\x04\x01' + serial
         crc_itu_be = crc16_itu_factory_bytes_be(ack_data)
         ack = b'\x78\x78' + ack_data + crc_itu_be + b'\x0D\x0A'
         
@@ -491,7 +491,7 @@ def handle_alarm_direct(data, conn_data=None):
         
         # Enviar ACK de confirmación
         serial = b'\x00\x01'  # Serial por defecto
-        ack_data = b'\x03\x01' + serial
+        ack_data = b'\x04\x01' + serial
         crc_itu_be = crc16_itu_factory_bytes_be(ack_data)
         ack = b'\x78\x78' + ack_data + crc_itu_be + b'\x0D\x0A'
         
@@ -720,15 +720,8 @@ def main():
                                     log(f"[SUCCESS] ACK tipo '{conn_data['current_ack_type']}' funcionó correctamente")
                                 parse_position(data)
                             elif tipo_paquete == 0x13:  # Estado del terminal
-                                 log(f"[STATUS] Paquete de estado recibido (0x13)")
+                                 log(f"[STATUS] Paquete de estado recibido (0x13) - ACK aún no reconocido")
                                  conn_data = connection_data[conn]
-                                 
-                                 # Si es el primer paquete después del login, considerar ACK exitoso
-                                 if conn_data.get('login_completed') and not conn_data.get('ack_success'):
-                                     log(f"[SUCCESS] ¡ACK exitoso! Dispositivo envió estado después del login")
-                                     conn_data['ack_success'] = True
-                                     if conn_data.get('current_ack_type'):
-                                         log(f"[SUCCESS] ACK tipo '{conn_data['current_ack_type']}' funcionó correctamente")
                                  
                                  # Parsear información del estado si es posible
                                  try:
@@ -742,7 +735,7 @@ def main():
                                              log(f"[STATUS] Serial del estado: {status_serial.hex()}")
                                              
                                              # Enviar ACK específico para el estado
-                                             ack_data = b'\x03\x01' + status_serial
+                                             ack_data = b'\x04\x01' + status_serial
                                              crc_be = crc16_itu_factory_bytes_be(ack_data)
                                              ack = b'\x78\x78' + ack_data + crc_be + b'\x0D\x0A'
                                              conn.sendall(ack)
