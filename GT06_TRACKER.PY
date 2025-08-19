@@ -133,10 +133,9 @@ def auto_retry_ack(serial, conn, conn_data):
     Prueba solo las dos versiones del CRC-ITU del fabricante
     """
     def retry_thread():
-        # Solo probar las dos versiones del CRC-ITU del fabricante
-        ack_types = ['itu_le', 'itu_be']
+        # Solo probar  itu_le', 'itu_be' zzzz]
         current_ack = 0
-        
+        pepe=0
         # Esperar 3 segundos antes del primer reintento
         time.sleep(3)
         
