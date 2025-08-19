@@ -9,7 +9,7 @@ import time
 import threading
 
 HOST = '200.58.98.187'
-PORT = 4997  # Puerto diferente para pruebas
+PORT = 5003  # Puerto diferente para pruebas
 
 LOG_FILE = "datosChino_corrected.txt"
 
