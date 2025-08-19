@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Servidor GT06 corregido con múltiples estrategias de ACK y reintentos automáticos
+Servidor GT06 avanzado con comandos de configuración y manejo robusto del protocolo
 """
 
 import socket
@@ -9,9 +9,9 @@ import time
 import threading
 
 HOST = '0.0.0.0'  # Escuchar en todas las interfaces
-PORT = 5003  # Puerto diferente para pruebas
+PORT = 5003
 
-LOG_FILE = "datosChino_corrected.txt"
+LOG_FILE = "datosChino_advanced.txt"
 
 # Tabla CRC-ITU del fabricante (CRC-CCITT)
 CRC_TAB16 = [
@@ -61,11 +61,6 @@ def crc16_itu_factory_bytes_be(data):
     crc = crc16_itu_factory(data)
     return bytes([(crc >> 8) & 0xFF, crc & 0xFF])
 
-def crc16_itu_factory_bytes_le(data):
-    """CRC en formato bytes (little-endian)"""
-    crc = crc16_itu_factory(data)
-    return bytes([crc & 0xFF, (crc >> 8) & 0xFF])
-
 def log(message):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"{timestamp} {message}"
@@ -76,107 +71,58 @@ def log(message):
 def log_sent(data):
     log(f"[ENVIADO] {data.hex()}")
 
-def send_ack_variant(serial, conn, variant="standard"):
+def send_ack(serial, conn):
     """
-    Envía diferentes variantes de ACK para probar cuál funciona
+    Envía ACK estándar según especificaciones GT06
     """
-    if variant == "standard":
-        # ACK estándar: 7878 + 05 + 01 + serial + CRC + 0D0A
-        ack_data = b'\x05\x01' + serial
-        crc = crc16_itu_factory_bytes_be(ack_data)
-        ack = b'\x78\x78' + ack_data + crc + b'\x0D\x0A'
-        
-    elif variant == "manual_example":
-        # Basado en el ejemplo del manual: 7878 + 05 + 01 + 0002 + EB47 + 0D0A
-        ack_data = b'\x05\x01' + serial
-        crc = crc16_itu_factory_bytes_be(ack_data)
-        ack = b'\x78\x78' + ack_data + crc + b'\x0D\x0A'
-        
-    elif variant == "short_length":
-        # ACK con longitud 03: 7878 + 03 + 01 + serial + CRC + 0D0A
-        ack_data = b'\x03\x01' + serial
-        crc = crc16_itu_factory_bytes_be(ack_data)
-        ack = b'\x78\x78' + ack_data + crc + b'\x0D\x0A'
-        
-    elif variant == "le_crc":
-        # ACK con CRC little-endian
-        ack_data = b'\x05\x01' + serial
-        crc = crc16_itu_factory_bytes_le(ack_data)
-        ack = b'\x78\x78' + ack_data + crc + b'\x0D\x0A'
-        
-    elif variant == "no_crc":
-        # ACK sin CRC (solo para pruebas)
-        ack_data = b'\x05\x01' + serial
-        ack = b'\x78\x78' + ack_data + b'\x00\x00' + b'\x0D\x0A'
-        
-    else:
-        return None
+    ack_data = b'\x05\x01' + serial
+    crc = crc16_itu_factory_bytes_be(ack_data)
+    ack = b'\x78\x78' + ack_data + crc + b'\x0D\x0A'
     
-    log(f"[ACK_{variant.upper()}] Enviando ACK: {ack.hex()}")
-    log(f"[ACK_{variant.upper()}] ACK data: {ack_data.hex()}")
-    if variant != "no_crc":
-        log(f"[ACK_{variant.upper()}] CRC: {crc.hex()}")
-    log(f"[ACK_{variant.upper()}] Longitud total: {len(ack)} bytes")
+    log(f"[ACK] Enviando ACK: {ack.hex()}")
+    log(f"[ACK] ACK data: {ack_data.hex()}")
+    log(f"[ACK] CRC: {crc.hex()}")
     
     conn.sendall(ack)
     log_sent(ack)
     return ack
 
-def auto_retry_ack(serial, conn, conn_data):
+def send_server_command(conn, command, serial):
     """
-    Sistema automático de reintentos con diferentes variantes de ACK
+    Envía comando del servidor al dispositivo
+    Formato: 7878 + length + 80 + command + serial + CRC + 0D0A
     """
-    def retry_thread():
-        log(f"[AUTO_RETRY] Iniciando sistema automático de reintentos para serial: {serial.hex()}")
-        
-        # Lista de variantes a probar
-        variants = [
-            "manual_example",  # Basado en el ejemplo del manual
-            "standard",        # ACK estándar
-            "le_crc",          # CRC little-endian
-            "short_length",    # Longitud 03
-            "no_crc"           # Sin CRC (último recurso)
-        ]
-        
-        for variant in variants:
-            for attempt in range(2):  # 2 intentos por variante
-                try:
-                    log(f"[AUTO_RETRY] Intento {attempt+1}/2: Probando ACK tipo '{variant}'")
-                    send_ack_variant(serial, conn, variant)
-                    
-                    # Esperar 3 segundos para ver si llega posición
-                    time.sleep(3)
-                    
-                    # Verificar si ya se recibió posición
-                    if conn_data.get('position_received', False):
-                        log(f"[AUTO_RETRY] ¡ÉXITO! ACK tipo '{variant}' funcionó")
-                        conn_data['successful_ack_type'] = variant
-                        return
-                        
-                except Exception as e:
-                    log(f"[AUTO_RETRY] Error en intento {attempt+1} con variante '{variant}': {e}")
-                
-                if attempt < 1:  # No esperar después del último intento de cada variante
-                    time.sleep(2)
-        
-        log(f"[AUTO_RETRY] Completados todos los intentos sin éxito")
+    # Convertir comando a bytes
+    command_bytes = command.encode('ascii')
     
-    # Iniciar thread de reintentos
-    thread = threading.Thread(target=retry_thread, daemon=True)
-    thread.start()
+    # Calcular longitud total: protocol(80) + command + serial
+    total_length = 1 + len(command_bytes) + 2
+    
+    # Construir datos del comando
+    command_data = bytes([total_length, 0x80]) + command_bytes + serial
+    
+    # Calcular CRC
+    crc = crc16_itu_factory_bytes_be(command_data)
+    
+    # Construir paquete completo
+    packet = b'\x78\x78' + command_data + crc + b'\x0D\x0A'
+    
+    log(f"[CMD] Enviando comando: {command}")
+    log(f"[CMD] Command data: {command_data.hex()}")
+    log(f"[CMD] CRC: {crc.hex()}")
+    log(f"[CMD] Packet completo: {packet.hex()}")
+    
+    conn.sendall(packet)
+    log_sent(packet)
+    return packet
 
 def validate_packet_crc(data):
-    """
-    Valida el CRC16 de un paquete recibido
-    """
+    """Valida el CRC16 de un paquete recibido"""
     if len(data) < 6:
         return False
     
-    # Extraer datos para calcular CRC (desde length hasta antes del CRC)
     packet_data = data[2:-4]  # Sin 7878 y sin CRC16 + 0D0A
     received_crc = data[-4:-2]  # CRC recibido
-    
-    # Calcular CRC esperado
     expected_crc = crc16_itu_factory_bytes_be(packet_data)
     
     log(f"[CRC] Packet data: {packet_data.hex()}")
@@ -185,10 +131,8 @@ def validate_packet_crc(data):
     
     return received_crc == expected_crc
 
-def handle_login_corrected(data, conn, conn_data):
-    """
-    Maneja el login con múltiples estrategias de ACK
-    """
+def handle_login(data, conn, conn_data):
+    """Maneja el login con ACK y comandos de configuración"""
     try:
         log(f"[LOGIN] === PROCESANDO LOGIN ===")
         
@@ -207,26 +151,55 @@ def handle_login_corrected(data, conn, conn_data):
         log(f"[LOGIN] IMEI: {imei}")
         log(f"[LOGIN] Serial: {serial.hex()}")
         
-        # Guardar serial en datos de conexión
+        # Guardar datos en conexión
         conn_data['login_serial'] = serial
+        conn_data['imei'] = imei
         conn_data['position_received'] = False
+        conn_data['login_time'] = time.time()
         
-        # Enviar ACK inicial (estándar)
-        ack = send_ack_variant(serial, conn, "standard")
+        # Enviar ACK estándar
+        ack = send_ack(serial, conn)
         
-        # Iniciar sistema de reintentos automáticos
-        auto_retry_ack(serial, conn, conn_data)
+        # Iniciar secuencia de configuración
+        def config_sequence():
+            time.sleep(2)  # Esperar 2 segundos después del ACK
+            
+            # Comando 1: Configurar modo de transmisión
+            log("[CONFIG] Enviando comando de configuración de modo...")
+            send_server_command(conn, "MODE,1#", serial)
+            
+            time.sleep(3)  # Esperar 3 segundos
+            
+            # Comando 2: Solicitar posición
+            log("[CONFIG] Enviando solicitud de posición...")
+            send_server_command(conn, "POSITION#", serial)
+            
+            time.sleep(3)  # Esperar 3 segundos
+            
+            # Comando 3: Configurar intervalo de reporte
+            log("[CONFIG] Configurando intervalo de reporte...")
+            send_server_command(conn, "INTERVAL,30#", serial)
+            
+            time.sleep(3)  # Esperar 3 segundos
+            
+            # Comando 4: Activar reporte automático
+            log("[CONFIG] Activando reporte automático...")
+            send_server_command(conn, "AUTO,1#", serial)
+            
+            log("[CONFIG] Secuencia de configuración completada")
+        
+        # Iniciar secuencia de configuración en thread separado
+        config_thread = threading.Thread(target=config_sequence, daemon=True)
+        config_thread.start()
         
         return ack
         
     except Exception as e:
-        log(f"[ERROR] Error en handle_login_corrected: {e}")
+        log(f"[ERROR] Error en handle_login: {e}")
         return None
 
-def parse_position_corrected(data):
-    """
-    Parseo de posición con validación mejorada
-    """
+def parse_position(data):
+    """Parseo de posición con validación mejorada"""
     try:
         log(f"[POSITION] === PROCESANDO POSICIÓN ===")
         log(f"[POSITION] Longitud del paquete: {len(data)} bytes")
@@ -288,12 +261,12 @@ def parse_position_corrected(data):
         return True
         
     except Exception as e:
-        log(f"[ERROR] Error en parse_position_corrected: {e}")
+        log(f"[ERROR] Error en parse_position: {e}")
         return False
 
 def main():
-    log(f"[CORRECTED] Servidor GT06 corregido iniciado en {HOST}:{PORT}")
-    log(f"[CORRECTED] Usando múltiples estrategias de ACK y reintentos automáticos")
+    log(f"[ADVANCED] Servidor GT06 avanzado iniciado en {HOST}:{PORT}")
+    log(f"[ADVANCED] Incluye comandos de configuración y manejo robusto")
     
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((HOST, PORT))
@@ -303,7 +276,7 @@ def main():
             try:
                 conn, addr = s.accept()
                 with conn:
-                    log(f"[CORRECTED] Conexión entrante desde {addr}")
+                    log(f"[ADVANCED] Conexión entrante desde {addr}")
                     
                     # Diccionario para almacenar datos de la conexión
                     conn_data = {}
@@ -313,10 +286,10 @@ def main():
                         if not data:
                             break
                         
-                        log(f"[CORRECTED] [RECIBIDO] {data.hex()}")
+                        log(f"[ADVANCED] [RECIBIDO] {data.hex()}")
                         
                         if len(data) < 8:
-                            log("[CORRECTED] [ERROR] Paquete demasiado corto")
+                            log("[ADVANCED] [ERROR] Paquete demasiado corto")
                             continue
                         
                         if data.startswith(b'\x78\x78'):
@@ -324,58 +297,56 @@ def main():
                                 packet_length = data[2]
                                 protocol = data[3]
                                 
-                                log(f"[CORRECTED] Protocol: 0x{protocol:02X}, Length: {packet_length}")
+                                log(f"[ADVANCED] Protocol: 0x{protocol:02X}, Length: {packet_length}")
                                 
                                 if protocol == 0x01:  # Login
-                                    log("[CORRECTED] Procesando login...")
-                                    ack = handle_login_corrected(data, conn, conn_data)
+                                    log("[ADVANCED] Procesando login...")
+                                    ack = handle_login(data, conn, conn_data)
                                     if ack:
-                                        log("[CORRECTED] ✓ ACK de login enviado correctamente")
+                                        log("[ADVANCED] ✓ ACK de login enviado correctamente")
                                     else:
-                                        log("[CORRECTED] ✗ Error enviando ACK de login")
+                                        log("[ADVANCED] ✗ Error enviando ACK de login")
                                     
                                 elif protocol == 0x12:  # Posición
-                                    log("[CORRECTED] ¡POSICIÓN RECIBIDA! ACK funcionó")
+                                    log("[ADVANCED] ¡POSICIÓN RECIBIDA! ACK funcionó")
                                     conn_data['position_received'] = True
                                     
-                                    if parse_position_corrected(data):
-                                        log("[CORRECTED] ✓ Posición parseada correctamente")
+                                    if parse_position(data):
+                                        log("[ADVANCED] ✓ Posición parseada correctamente")
                                         
-                                        # Enviar ACK para posición usando el tipo exitoso
+                                        # Enviar ACK para posición
                                         if len(data) >= 25:
                                             pos_serial = data[23:25]
-                                            successful_type = conn_data.get('successful_ack_type', 'standard')
-                                            send_ack_variant(pos_serial, conn, successful_type)
-                                            log(f"[CORRECTED] ✓ ACK de posición enviado (tipo: {successful_type})")
+                                            send_ack(pos_serial, conn)
+                                            log("[ADVANCED] ✓ ACK de posición enviado")
                                     else:
-                                        log("[CORRECTED] ✗ Error parseando posición")
+                                        log("[ADVANCED] ✗ Error parseando posición")
                                     
                                 elif protocol == 0x13:  # Estado
-                                    log("[CORRECTED] Estado recibido - ACK aún no reconocido")
-                                    # Enviar ACK para estado usando el tipo exitoso si está disponible
+                                    log("[ADVANCED] Estado recibido - ACK aún no reconocido")
+                                    # Enviar ACK para estado
                                     if len(data) >= 8:
                                         status_info = data[4:-4]
                                         if len(status_info) >= 7:
                                             status_serial = status_info[-2:]
-                                            successful_type = conn_data.get('successful_ack_type', 'standard')
-                                            send_ack_variant(status_serial, conn, successful_type)
-                                            log(f"[CORRECTED] ACK para estado enviado (tipo: {successful_type})")
+                                            send_ack(status_serial, conn)
+                                            log("[ADVANCED] ACK para estado enviado")
                                     
                                 elif protocol == 0x23:  # Heartbeat
-                                    log("[CORRECTED] Heartbeat recibido")
+                                    log("[ADVANCED] Heartbeat recibido")
                                     
                                 elif protocol == 0x26:  # Alarma
-                                    log("[CORRECTED] Alarma recibida")
+                                    log("[ADVANCED] Alarma recibida")
                                     
                                 else:
-                                    log(f"[CORRECTED] Protocolo desconocido: 0x{protocol:02X}")
+                                    log(f"[ADVANCED] Protocolo desconocido: 0x{protocol:02X}")
                         else:
-                            log("[CORRECTED] [ERROR] Paquete no comienza con 7878")
+                            log("[ADVANCED] [ERROR] Paquete no comienza con 7878")
                             
             except socket.error as e:
-                log(f"[CORRECTED] [ERROR] Error de socket: {e}")
+                log(f"[ADVANCED] [ERROR] Error de socket: {e}")
             except Exception as e:
-                log(f"[CORRECTED] [ERROR] Error inesperado: {e}")
+                log(f"[ADVANCED] [ERROR] Error inesperado: {e}")
 
 if __name__ == "__main__":
     main()
