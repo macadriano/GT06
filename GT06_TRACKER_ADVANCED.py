@@ -8,7 +8,7 @@ import datetime
 import time
 import threading
 
-HOST = '0.0.0.0'  # Escuchar en todas las interfaces
+HOST = '200.58.98.187'  # Escuchar en todas las interfaces
 PORT = 5003
 
 LOG_FILE = "datosChino_advanced.txt"
