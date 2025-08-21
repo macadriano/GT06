@@ -9,7 +9,7 @@ import datetime
 import time
 
 HOST = '0.0.0.0'
-PORT = 5007  # Puerto específico para este módulo
+PORT = 5003  # Puerto específico para este módulo
 
 LOG_FILE = "datosChino_manual_strict.txt"
 
@@ -60,7 +60,7 @@ def crc16_itu_factory(data):
 
 def log(message):
     """
-    Logging con timestamp
+    Logging con timestamp incluyendo segundos
     """
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"{timestamp} {message}"
