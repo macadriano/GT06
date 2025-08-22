@@ -45,17 +45,54 @@ def run_server():
         
         print(f"✅ Servidor iniciado exitosamente en puerto {PORT}")
         print("💡 Presiona Ctrl+C para detener el servidor")
+        print("💬 Escribe mensajes para enviar a todos los clientes conectados")
         print("-" * 60)
+        
+        # Lista para mantener clientes conectados
+        connected_clients = []
+        
+        # Thread para manejar entrada del servidor
+        def server_input_handler():
+            try:
+                while True:
+                    server_message = input("📤 Servidor: ").strip()
+                    if server_message:
+                        # Enviar mensaje a todos los clientes conectados
+                        timestamp = time.strftime("%H:%M:%S")
+                        print(f"📤 Enviando: {server_message}")
+                        
+                        # Filtrar clientes desconectados y enviar mensaje
+                        active_clients = []
+                        for client_info in connected_clients:
+                            try:
+                                client_info['socket'].send(server_message.encode('utf-8'))
+                                active_clients.append(client_info)
+                            except:
+                                print(f"🔌 Cliente {client_info['address']} desconectado")
+                        
+                        connected_clients[:] = active_clients
+                        
+            except (EOFError, KeyboardInterrupt):
+                pass
+        
+        # Iniciar thread para entrada del servidor
+        input_thread = threading.Thread(target=server_input_handler)
+        input_thread.daemon = True
+        input_thread.start()
         
         try:
             while True:
                 client_socket, client_address = server_socket.accept()
                 print(f"🔗 Cliente conectado desde: {client_address}")
                 
+                # Agregar cliente a la lista
+                client_info = {'socket': client_socket, 'address': client_address}
+                connected_clients.append(client_info)
+                
                 # Crear thread para manejar cliente
                 client_thread = threading.Thread(
                     target=handle_client, 
-                    args=(client_socket, client_address)
+                    args=(client_socket, client_address, connected_clients)
                 )
                 client_thread.daemon = True
                 client_thread.start()
@@ -65,7 +102,7 @@ def run_server():
         except Exception as e:
             print(f"❌ Error en servidor: {e}")
 
-def handle_client(client_socket, client_address):
+def handle_client(client_socket, client_address, connected_clients):
     """Maneja la comunicación con un cliente"""
     print(f"💬 Iniciando chat con {client_address}")
     
@@ -88,6 +125,11 @@ def handle_client(client_socket, client_address):
     except Exception as e:
         print(f"❌ Error con cliente {client_address}: {e}")
     finally:
+        # Remover cliente de la lista cuando se desconecte
+        try:
+            connected_clients[:] = [c for c in connected_clients if c['address'] != client_address]
+        except:
+            pass
         client_socket.close()
         print(f"🔌 Cliente {client_address} desconectado")
 
@@ -195,8 +237,9 @@ def show_help():
     print("\n💡 CONSEJOS:")
     print("  - Ejecuta primero el servidor en una terminal")
     print("  - Luego ejecuta el cliente en otra terminal")
-    print("  - Para conectar desde otra PC, usa la IP del servidor")
-    print("  - El puerto 5003 debe estar abierto en el firewall")
+            print("  - El servidor puede escribir mensajes para enviar a todos los clientes")
+        print("  - Para conectar desde otra PC, usa la IP del servidor")
+        print("  - El puerto 5003 debe estar abierto en el firewall")
 
 def main():
     """Función principal"""
