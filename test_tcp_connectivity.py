@@ -237,8 +237,8 @@ def show_help():
     print("\n💡 CONSEJOS:")
     print("  - Ejecuta primero el servidor en una terminal")
     print("  - Luego ejecuta el cliente en otra terminal")
-            print("  - El servidor puede escribir mensajes para enviar a todos los clientes")
-        print("  - Para conectar desde otra PC, usa la IP del servidor")
+    print("  - El servidor puede escribir mensajes para enviar a todos los clientes")
+    print("  - Para conectar desde otra PC, usa la IP del servidor")
         print("  - El puerto 5003 debe estar abierto en el firewall")
 
 def main():
