@@ -239,7 +239,7 @@ def show_help():
     print("  - Luego ejecuta el cliente en otra terminal")
     print("  - El servidor puede escribir mensajes para enviar a todos los clientes")
     print("  - Para conectar desde otra PC, usa la IP del servidor")
-        print("  - El puerto 5003 debe estar abierto en el firewall")
+    print("  - El puerto 5003 debe estar abierto en el firewall")
 
 def main():
     """Función principal"""
